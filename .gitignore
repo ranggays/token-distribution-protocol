@@ -1,9 +1,9 @@
-.anchor
+backend/.anchor
 .DS_Store
-target
-**/*.rs.bk
-node_modules
-test-ledger
-.yarn
+backend/target
+backend/**/*.rs.bk
+backend/node_modules
+backend/test-ledger
+backend/.yarn
 
-plan/*
+backend/plan/*
