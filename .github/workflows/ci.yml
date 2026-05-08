@@ -52,5 +52,10 @@ jobs:
       - name: Build program
         run: yarn build
 
+      - name: Create local test wallet
+        run: |
+          mkdir -p "$HOME/.config/solana"
+          solana-keygen new --no-bip39-passphrase --silent -o "$HOME/.config/solana/id.json"
+
       - name: Run tests
         run: yarn test
