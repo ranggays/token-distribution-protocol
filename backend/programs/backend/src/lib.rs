@@ -58,6 +58,7 @@ pub struct CancelStream<'info> {
     pub vault: UncheckedAccount<'info>,
 }
 
+#[derive(InitSpace)]
 #[account]
 pub struct StreamConfig {
     pub stream_id: u64,
@@ -86,9 +87,10 @@ pub struct StreamConfig {
 }
 
 impl StreamConfig {
-    pub const SPACE: usize = 8 + 352;
+    pub const SPACE: usize = 8 + StreamConfig::INIT_SPACE;
 }
 
+#[derive(InitSpace)]
 #[account]
 pub struct ClaimReceipt {
     pub stream: Pubkey,
@@ -99,7 +101,7 @@ pub struct ClaimReceipt {
 }
 
 impl ClaimReceipt {
-    pub const SPACE: usize = 8 + 60;
+    pub const SPACE: usize = 8 + ClaimReceipt::INIT_SPACE;
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
