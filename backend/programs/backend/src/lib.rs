@@ -6,10 +6,7 @@ declare_id!("Fwboky3ufxoT43egazAymFmjyAtJVDJLVJs977oLSN4V");
 pub mod backend {
     use super::*;
 
-    pub fn create_stream(
-        _ctx: Context<CreateStream>,
-        _params: CreateStreamParams,
-    ) -> Result<()> {
+    pub fn create_stream(_ctx: Context<CreateStream>, _params: CreateStreamParams) -> Result<()> {
         Ok(())
     }
 
