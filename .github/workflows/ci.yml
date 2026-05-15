@@ -46,7 +46,13 @@ jobs:
       - name: Install JavaScript dependencies
         run: yarn install --frozen-lockfile
 
-      - name: Lint
+      - name: Lint (Rust fmt)
+        run: cargo fmt --check
+
+      - name: Lint (Rust clippy)
+        run: cargo clippy -- -D warnings
+
+      - name: Lint (JS/TS prettier)
         run: yarn lint
 
       - name: Build program
