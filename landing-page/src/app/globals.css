@@ -96,8 +96,8 @@
 
 * {
   box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+  /* margin: 0;
+  padding: 0; */
 }
 
 html {
@@ -1734,5 +1734,77 @@ body.loaded #main-content {
 
   .contact-title h2 {
     font-size: clamp(2.55rem, 15vw, 3.45rem);
+  }
+}
+
+@layer components {
+  .sf-header {
+    padding: 16px 24px;
+  }
+
+  .sf-search {
+    padding: 0 12px;
+  }
+
+  .sf-sidebar-header {
+    padding: 16px 28px;
+  }
+
+  .sf-sidebar-nav {
+    padding: 20px;
+  }
+
+  .sf-sidebar-footer {
+    padding: 0 20px 16px;
+  }
+
+  .sf-nav-item {
+    padding: 8px;
+  }
+
+  .sf-more-button {
+    padding: 4px 12px;
+  }
+
+  .sf-content {
+    padding: 0;
+  }
+
+  .sf-hero {
+    padding: 24px 32px;
+  }
+
+  .sf-primary-button {
+    padding: 0 12px;
+  }
+
+  .sf-skeleton-card {
+    padding: 16px;
+  }
+
+  .sf-quick-action {
+    padding: 16px 24px 16px 16px;
+  }
+
+  .sf-action-icon {
+    padding: 12px;
+  }
+
+  .sf-footer {
+    padding: 8px 24px;
+  }
+
+  @media (max-width: 767px) {
+    .sf-header {
+      padding: 16px 24px;
+    }
+
+    .sf-content {
+      padding: 0;
+    }
+
+    .sf-hero {
+      padding: 24px;
+    }
   }
 }
