@@ -17,11 +17,16 @@ pub mod backend {
             ctx.accounts.recipient.key() != ctx.accounts.creator.key(),
             ErrorCode::SameRecipientCreator
         );
-        require!(
-            params.schedule_type == ScheduleType::Linear,
-            ErrorCode::UnsupportedSchedule
-        );
-
+        if matches!(
+            params.schedule_type,
+            ScheduleType::Cliff | ScheduleType::CliffLinear
+        ) {
+            require!(
+                params.cliff_timestamp > params.start_timestamp
+                    && params.cliff_timestamp < params.end_timestamp,
+                ErrorCode::InvalidSchedule
+            );
+        }
         let now = Clock::get()?.unix_timestamp;
         let stream_config = &mut ctx.accounts.stream_config;
 
@@ -77,27 +82,22 @@ pub mod backend {
             ErrorCode::StreamNotActive
         );
 
-        let unlocked = compute_linear_unlocked(stream_config, now)?;
+        let unlocked = compute_unlocked(stream_config, now)?;
         let claimable = unlocked
             .checked_sub(stream_config.amount_claimed)
             .ok_or(ErrorCode::MathOverflow)?;
 
-        require!(claimable > 0, ErrorCode::NothingToClaim);
+        require!(claimable > 0, ErrorCode::NothingToWithdraw);
 
         let stream_key = stream_config.key();
         let signer_seeds: &[&[&[u8]]] =
             &[&[b"vault", stream_key.as_ref(), &[stream_config.vault_bump]]];
 
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.vault.to_account_info(),
-                    to: ctx.accounts.recipient_token_account.to_account_info(),
-                    authority: ctx.accounts.vault.to_account_info(),
-                },
-                signer_seeds,
-            ),
+        transfer_from_vault(
+            &ctx.accounts.token_program,
+            &ctx.accounts.vault,
+            &ctx.accounts.recipient_token_account,
+            signer_seeds,
             claimable,
         )?;
 
@@ -113,7 +113,90 @@ pub mod backend {
         Ok(())
     }
 
-    pub fn cancel(_ctx: Context<CancelStream>) -> Result<()> {
+    pub fn release_milestone(ctx: Context<ReleaseMilestone>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let stream_config = &mut ctx.accounts.stream_config;
+
+        require!(
+            stream_config.status == StreamStatus::Active,
+            ErrorCode::StreamNotActive
+        );
+        require!(
+            stream_config.schedule_type == ScheduleType::Milestone,
+            ErrorCode::UnsupportedSchedule
+        );
+        require!(
+            ctx.accounts.authority.key() == stream_config.creator
+                || ctx.accounts.authority.key() == stream_config.release_authority,
+            ErrorCode::Unauthorized
+        );
+        require!(now <= stream_config.end_timestamp, ErrorCode::StreamExpired);
+
+        stream_config.milestone_released = true;
+
+        Ok(())
+    }
+
+    pub fn cancel(ctx: Context<CancelStream>) -> Result<()> {
+        let now = Clock::get()?.unix_timestamp;
+        let stream_config = &mut ctx.accounts.stream_config;
+
+        require!(
+            ctx.accounts.authority.key() == stream_config.creator,
+            ErrorCode::Unauthorized
+        );
+        require!(
+            stream_config.status != StreamStatus::Cancelled,
+            ErrorCode::AlreadyCancelled
+        );
+        require!(
+            stream_config.status != StreamStatus::Completed,
+            ErrorCode::FullyVested
+        );
+
+        let unlocked = compute_unlocked(stream_config, now)?;
+        require!(
+            unlocked < stream_config.total_amount,
+            ErrorCode::FullyVested
+        );
+
+        let unlocked_unclaimed = unlocked
+            .checked_sub(stream_config.amount_claimed)
+            .ok_or(ErrorCode::MathOverflow)?;
+        let locked_amount = ctx
+            .accounts
+            .vault
+            .amount
+            .checked_sub(unlocked_unclaimed)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        let stream_key = stream_config.key();
+        let signer_seeds: &[&[&[u8]]] =
+            &[&[b"vault", stream_key.as_ref(), &[stream_config.vault_bump]]];
+
+        if unlocked_unclaimed > 0 {
+            transfer_from_vault(
+                &ctx.accounts.token_program,
+                &ctx.accounts.vault,
+                &ctx.accounts.recipient_token_account,
+                signer_seeds,
+                unlocked_unclaimed,
+            )?;
+        }
+
+        if locked_amount > 0 {
+            transfer_from_vault(
+                &ctx.accounts.token_program,
+                &ctx.accounts.vault,
+                &ctx.accounts.creator_token_account,
+                signer_seeds,
+                locked_amount,
+            )?;
+        }
+
+        stream_config.amount_claimed = unlocked;
+        stream_config.status = StreamStatus::Cancelled;
+
         Ok(())
     }
 }
@@ -193,30 +276,134 @@ pub struct Withdraw<'info> {
 #[derive(Accounts)]
 pub struct CancelStream<'info> {
     pub authority: Signer<'info>,
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [
+            b"stream",
+            stream_config.creator.as_ref(),
+            stream_config.recipient.as_ref(),
+            &stream_config.stream_id.to_le_bytes()
+        ],
+        bump = stream_config.bump
+    )]
     pub stream_config: Account<'info, StreamConfig>,
-    /// CHECK: Token account validation is implemented in later weeks.
-    #[account(mut)]
-    pub vault: UncheckedAccount<'info>,
+    #[account(
+        mut,
+        seeds = [b"vault", stream_config.key().as_ref()],
+        bump = stream_config.vault_bump,
+        constraint = vault.key() == stream_config.vault @ ErrorCode::InvalidVault,
+        constraint = vault.mint == stream_config.mint @ ErrorCode::InvalidMint
+    )]
+    pub vault: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        constraint = recipient_token_account.owner == stream_config.recipient @ ErrorCode::Unauthorized,
+        constraint = recipient_token_account.mint == stream_config.mint @ ErrorCode::InvalidMint
+    )]
+    pub recipient_token_account: Account<'info, TokenAccount>,
+    #[account(
+        mut,
+        constraint = creator_token_account.owner == stream_config.creator @ ErrorCode::Unauthorized,
+        constraint = creator_token_account.mint == stream_config.mint @ ErrorCode::InvalidMint
+    )]
+    pub creator_token_account: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
 }
 
-fn compute_linear_unlocked(stream_config: &StreamConfig, now: i64) -> Result<u64> {
-    if now <= stream_config.start_timestamp {
+#[derive(Accounts)]
+pub struct ReleaseMilestone<'info> {
+    pub authority: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [
+            b"stream",
+            stream_config.creator.as_ref(),
+            stream_config.recipient.as_ref(),
+            &stream_config.stream_id.to_le_bytes()
+        ],
+        bump = stream_config.bump
+    )]
+    pub stream_config: Account<'info, StreamConfig>,
+}
+
+fn transfer_from_vault<'info>(
+    token_program: &Program<'info, Token>,
+    vault: &Account<'info, TokenAccount>,
+    destination: &Account<'info, TokenAccount>,
+    signer_seeds: &[&[&[u8]]],
+    amount: u64,
+) -> Result<()> {
+    token::transfer(
+        CpiContext::new_with_signer(
+            token_program.to_account_info(),
+            Transfer {
+                from: vault.to_account_info(),
+                to: destination.to_account_info(),
+                authority: vault.to_account_info(),
+            },
+            signer_seeds,
+        ),
+        amount,
+    )
+}
+
+fn compute_unlocked(stream_config: &StreamConfig, now: i64) -> Result<u64> {
+    match stream_config.schedule_type {
+        ScheduleType::Linear => compute_linear_unlocked(
+            stream_config.total_amount,
+            stream_config.start_timestamp,
+            stream_config.end_timestamp,
+            now,
+        ),
+        ScheduleType::Cliff | ScheduleType::CliffLinear => {
+            if now < stream_config.cliff_timestamp {
+                return Ok(0);
+            }
+
+            let linear_start = if stream_config.cliff_timestamp > 0 {
+                stream_config.cliff_timestamp
+            } else {
+                stream_config.start_timestamp
+            };
+
+            compute_linear_unlocked(
+                stream_config.total_amount,
+                linear_start,
+                stream_config.end_timestamp,
+                now,
+            )
+        }
+        ScheduleType::Milestone => {
+            if stream_config.milestone_released {
+                Ok(stream_config.total_amount)
+            } else {
+                Ok(0)
+            }
+        }
+    }
+}
+
+fn compute_linear_unlocked(
+    total_amount: u64,
+    start_timestamp: i64,
+    end_timestamp: i64,
+    now: i64,
+) -> Result<u64> {
+    if now <= start_timestamp {
         return Ok(0);
     }
 
-    if now >= stream_config.end_timestamp {
-        return Ok(stream_config.total_amount);
+    if now >= end_timestamp {
+        return Ok(total_amount);
     }
 
     let elapsed = now
-        .checked_sub(stream_config.start_timestamp)
+        .checked_sub(start_timestamp)
         .ok_or(ErrorCode::MathOverflow)? as u128;
-    let duration = stream_config
-        .end_timestamp
-        .checked_sub(stream_config.start_timestamp)
+    let duration = end_timestamp
+        .checked_sub(start_timestamp)
         .ok_or(ErrorCode::MathOverflow)? as u128;
-    let total_amount = stream_config.total_amount as u128;
+    let total_amount = total_amount as u128;
 
     let unlocked = total_amount
         .checked_mul(elapsed)
@@ -326,14 +513,20 @@ pub enum ErrorCode {
     InvalidSchedule,
     #[msg("Stream recipient and creator cannot be the same wallet.")]
     SameRecipientCreator,
-    #[msg("Only linear streams are supported in Week 4.")]
+    #[msg("Schedule type is not supported for this instruction.")]
     UnsupportedSchedule,
     #[msg("Signer is not authorized for this stream.")]
     Unauthorized,
     #[msg("Stream is not active.")]
     StreamNotActive,
-    #[msg("There are no unlocked tokens available to claim.")]
-    NothingToClaim,
+    #[msg("There are no unlocked tokens available to withdraw.")]
+    NothingToWithdraw,
+    #[msg("Stream is already cancelled.")]
+    AlreadyCancelled,
+    #[msg("Stream is already fully vested.")]
+    FullyVested,
+    #[msg("Stream has expired.")]
+    StreamExpired,
     #[msg("Vesting math overflowed.")]
     MathOverflow,
     #[msg("Token account mint does not match the stream mint.")]
