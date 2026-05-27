@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { VeloraChainProvider } from "@/lib/velora-chain";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -18,7 +19,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="h-full antialiased" suppressHydrationWarning>
-      <body suppressHydrationWarning>{children}</body>
+      <body suppressHydrationWarning>
+        <VeloraChainProvider>{children}</VeloraChainProvider>
+      </body>
     </html>
   );
 }
