@@ -33,7 +33,25 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Pie,
+  PieChart,
+  XAxis,
+  YAxis,
+} from "recharts";
 
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import {
   formatDate,
   formatTokenAmount,
@@ -267,6 +285,27 @@ function streamStatusLabel(stream: StreamView) {
 
 function matchesTab(stream: StreamView, tab: string) {
   return tab === "All" || streamStatusLabel(stream) === tab;
+}
+
+const analyticsChartConfig = {
+  ongoing: { label: "Ongoing", color: "#f2d467" },
+  scheduled: { label: "Scheduled", color: "#6ea8ff" },
+  completed: { label: "Completed", color: "#5ee2a0" },
+  canceled: { label: "Canceled", color: "#ff6b5d" },
+  total: { label: "Total", color: "#f2d467" },
+  claimed: { label: "Claimed", color: "#5ee2a0" },
+  claimable: { label: "Claimable", color: "#f2d467" },
+  locked: { label: "Locked", color: "#6ea8ff" },
+} satisfies ChartConfig;
+
+function chartAmount(value: bigint) {
+  const maxSafe = BigInt(Number.MAX_SAFE_INTEGER);
+  if (value > maxSafe) return Number.MAX_SAFE_INTEGER;
+  return Number(value);
+}
+
+function chartValueLabel(value: unknown) {
+  return typeof value === "number" ? value.toLocaleString("en-US") : String(value ?? "0");
 }
 
 function tokenLabel(draft: VestingDraft) {
@@ -821,10 +860,29 @@ function HeroBanner() {
 }
 
 export function DashboardHome() {
+  const { streams, loadingStreams, error, walletPublicKey, connect, refresh } = useVeloraChain();
+  const creatorStreams = useMemo(
+    () => streams.filter((stream) => walletPublicKey && stream.creator.equals(walletPublicKey)),
+    [streams, walletPublicKey],
+  );
+  const recipientStreams = useMemo(
+    () => streams.filter((stream) => walletPublicKey && stream.recipient.equals(walletPublicKey)),
+    [streams, walletPublicKey],
+  );
+
   return (
     <AppShell maxWidth="max-w-[1120px]">
       <div className="flex flex-col gap-[68px]">
         <HeroBanner />
+        <DashboardOverview
+          creatorStreams={creatorStreams}
+          error={error}
+          loadingStreams={loadingStreams}
+          onConnect={connect}
+          onRefresh={refresh}
+          recipientStreams={recipientStreams}
+          walletConnected={Boolean(walletPublicKey)}
+        />
         <section className="flex w-full flex-col gap-5">
           <h2 className="text-2xl font-medium leading-8 text-white">Get started</h2>
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
@@ -869,6 +927,393 @@ export function DashboardHome() {
         </section>
       </div>
     </AppShell>
+  );
+}
+
+function DashboardOverview({
+  creatorStreams,
+  recipientStreams,
+  walletConnected,
+  loadingStreams,
+  error,
+  onConnect,
+  onRefresh,
+}: {
+  creatorStreams: StreamView[];
+  recipientStreams: StreamView[];
+  walletConnected: boolean;
+  loadingStreams: boolean;
+  error: string | null;
+  onConnect: () => Promise<void>;
+  onRefresh: () => Promise<void>;
+}) {
+  const ongoingCount = creatorStreams.filter((stream) => streamStatusLabel(stream) === "Ongoing").length;
+  const scheduledCount = creatorStreams.filter((stream) => streamStatusLabel(stream) === "Scheduled").length;
+  const completedCount = creatorStreams.filter((stream) => streamStatusLabel(stream) === "Completed").length;
+  const totalCreatedAmount = creatorStreams.reduce((total, stream) => total + stream.totalAmount, BigInt(0));
+  const totalClaimedAmount = creatorStreams.reduce((total, stream) => total + stream.amountClaimed, BigInt(0));
+  const totalClaimableAmount = recipientStreams.reduce((total, stream) => total + stream.claimableAmount, BigInt(0));
+  const readyToClaimCount = recipientStreams.filter((stream) => stream.claimableAmount > BigInt(0)).length;
+  const recentCreatorStreams = creatorStreams.slice(0, 4);
+
+  return (
+    <section className="flex w-full flex-col gap-5">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h2 className="text-2xl font-medium leading-8 text-white">Dashboard</h2>
+          <p className="mt-2 max-w-[560px] text-sm leading-5 text-[#fffeea]/58">
+            Track vesting streams you created and claims connected to this wallet.
+          </p>
+        </div>
+        {walletConnected ? (
+          <SecondaryButton onClick={() => void onRefresh()}>
+            <Search size={18} />
+            Refresh
+          </SecondaryButton>
+        ) : null}
+      </div>
+
+      {error ? <FieldCard className="p-4 text-sm text-red-300">{error}</FieldCard> : null}
+
+      {!walletConnected ? (
+        <FieldCard className="flex flex-col gap-5 p-5 md:flex-row md:items-center md:justify-between">
+          <div>
+            <div className="text-base font-semibold text-white">Connect wallet to load dashboard</div>
+            <p className="mt-2 max-w-[520px] text-sm leading-5 text-[#fffeea]/58">
+              The dashboard uses your connected devnet wallet to separate created vesting streams from recipient claims.
+            </p>
+          </div>
+          <PrimaryButton onClick={() => void onConnect()}>Connect wallet</PrimaryButton>
+        </FieldCard>
+      ) : loadingStreams ? (
+        <FieldCard className="p-6 text-sm text-[#fffeea]/62">Loading dashboard streams...</FieldCard>
+      ) : (
+        <>
+          <DashboardAnalytics creatorStreams={creatorStreams} recipientStreams={recipientStreams} />
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <DashboardMetric icon={Timer} label="Created streams" value={String(creatorStreams.length)} />
+            <DashboardMetric icon={ArrowUp} label="Total scheduled" value={formatTokenAmount(totalCreatedAmount)} />
+            <DashboardMetric icon={Check} label="Claimed from created" value={formatTokenAmount(totalClaimedAmount)} />
+            <DashboardMetric icon={PackageOpen} label="Ready to claim" value={formatTokenAmount(totalClaimableAmount)} />
+          </div>
+
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.35fr_0.95fr]">
+            <FieldCard className="min-h-[316px] p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Created vesting</h3>
+                  <p className="mt-1 text-sm text-[#fffeea]/55">Recent streams created by this wallet.</p>
+                </div>
+                <Link className="text-sm font-medium text-[#f2d467]" href="/vesting">
+                  View all
+                </Link>
+              </div>
+
+              <div className="mt-5 grid grid-cols-3 gap-3 text-sm">
+                <div>
+                  <div className="text-[#fffeea]/45">Ongoing</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{ongoingCount}</div>
+                </div>
+                <div>
+                  <div className="text-[#fffeea]/45">Scheduled</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{scheduledCount}</div>
+                </div>
+                <div>
+                  <div className="text-[#fffeea]/45">Completed</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{completedCount}</div>
+                </div>
+              </div>
+
+              <div className="mt-5 divide-y divide-[#fffeea]/12">
+                {recentCreatorStreams.length > 0 ? (
+                  recentCreatorStreams.map((stream) => (
+                    <DashboardStreamRow key={stream.publicKey.toBase58()} stream={stream} />
+                  ))
+                ) : (
+                  <div className="flex min-h-[132px] flex-col justify-center gap-4 text-sm text-[#fffeea]/58">
+                    <span>No created vesting streams yet.</span>
+                    <PrimaryButton href="/create-vesting/type">
+                      <Plus size={18} />
+                      Create new
+                    </PrimaryButton>
+                  </div>
+                )}
+              </div>
+            </FieldCard>
+
+            <FieldCard className="flex min-h-[316px] flex-col p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Claim overview</h3>
+                  <p className="mt-1 text-sm text-[#fffeea]/55">Recipient-side streams for this wallet.</p>
+                </div>
+                <Link className="text-sm font-medium text-[#f2d467]" href="/claim">
+                  Open claim
+                </Link>
+              </div>
+
+              <div className="mt-6 grid grid-cols-2 divide-x divide-[#fffeea]/12 border-y border-[#fffeea]/12 py-4">
+                <div className="pr-4">
+                  <div className="text-sm text-[#fffeea]/45">Recipient streams</div>
+                  <div className="mt-2 text-2xl font-semibold text-white">{recipientStreams.length}</div>
+                </div>
+                <div className="pl-4">
+                  <div className="text-sm text-[#fffeea]/45">Can claim now</div>
+                  <div className="mt-2 text-2xl font-semibold text-white">{readyToClaimCount}</div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex flex-1 flex-col justify-between gap-6">
+                <div>
+                  <div className="text-sm text-[#fffeea]/45">Claimable tokens</div>
+                  <div className="mt-2 flex items-center gap-3 text-2xl font-semibold text-white">
+                    <TokenIcon />
+                    {formatTokenAmount(totalClaimableAmount)}
+                  </div>
+                </div>
+                <SecondaryButton href="/claim">
+                  <PackageOpen size={18} />
+                  Review claims
+                </SecondaryButton>
+              </div>
+            </FieldCard>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function DashboardAnalytics({
+  creatorStreams,
+  recipientStreams,
+}: {
+  creatorStreams: StreamView[];
+  recipientStreams: StreamView[];
+}) {
+  const [view, setView] = useState<"created" | "receiving">("created");
+  const activeStreams = view === "created" ? creatorStreams : recipientStreams;
+  const statusData = ["Ongoing", "Scheduled", "Completed", "Canceled"].map((status) => {
+    const key = status.toLowerCase() as keyof typeof analyticsChartConfig;
+    return {
+      key,
+      name: status,
+      value: activeStreams.filter((stream) => streamStatusLabel(stream) === status).length,
+      fill: analyticsChartConfig[key].color,
+    };
+  });
+  const totalAmount = activeStreams.reduce((total, stream) => total + stream.totalAmount, BigInt(0));
+  const claimedAmount = activeStreams.reduce((total, stream) => total + stream.amountClaimed, BigInt(0));
+  const claimableAmount = activeStreams.reduce((total, stream) => total + stream.claimableAmount, BigInt(0));
+  const lockedAmount = totalAmount > claimedAmount ? totalAmount - claimedAmount : BigInt(0);
+  const allocationData = [
+    { name: "Claimed", claimed: chartAmount(claimedAmount), valueLabel: formatTokenAmount(claimedAmount) },
+    { name: "Claimable", claimable: chartAmount(claimableAmount), valueLabel: formatTokenAmount(claimableAmount) },
+    { name: "Locked", locked: chartAmount(lockedAmount), valueLabel: formatTokenAmount(lockedAmount) },
+  ];
+  const timelineData = [...activeStreams]
+    .sort((a, b) => a.startTimestamp - b.startTimestamp)
+    .slice(0, 7)
+    .map((stream) => ({
+      name: new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(new Date(stream.startTimestamp * 1000)),
+      total: chartAmount(stream.totalAmount),
+      valueLabel: formatTokenAmount(stream.totalAmount),
+    }));
+
+  return (
+    <section className="flex flex-col gap-5">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h3 className="text-lg font-semibold text-white">Analytics</h3>
+          <p className="mt-1 max-w-[560px] text-sm leading-5 text-[#fffeea]/55">
+            Visual breakdown of vesting status, token movement, and schedule timing.
+          </p>
+        </div>
+        <div className="grid w-full grid-cols-2 rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] p-1 text-sm md:w-[260px]">
+          {[
+            { label: "Created", value: "created" },
+            { label: "Receiving", value: "receiving" },
+          ].map((item) => (
+            <button
+              className={`h-8 rounded-[3px] transition ${view === item.value ? "bg-[#fffeea] text-[#06070a]" : "text-[#fffeea]/58 hover:text-white"}`}
+              key={item.value}
+              onClick={() => setView(item.value as "created" | "receiving")}
+              type="button"
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[0.85fr_1.15fr]">
+        <FieldCard className="p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-base font-semibold text-white">Status mix</div>
+              <p className="mt-1 text-sm text-[#fffeea]/50">{activeStreams.length} streams in this view.</p>
+            </div>
+            <span className="rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">
+              {view === "created" ? "Creator" : "Recipient"}
+            </span>
+          </div>
+          {activeStreams.length > 0 ? (
+            <ChartContainer className="mt-4 h-[246px]" config={analyticsChartConfig}>
+              <PieChart>
+                <ChartTooltip
+                  content={
+                    <ChartTooltipContent
+                      config={analyticsChartConfig}
+                      hideLabel
+                      valueFormatter={chartValueLabel}
+                    />
+                  }
+                />
+                <Pie
+                  cx="50%"
+                  cy="50%"
+                  data={statusData}
+                  dataKey="value"
+                  innerRadius={54}
+                  nameKey="key"
+                  outerRadius={86}
+                  paddingAngle={3}
+                  stroke="transparent"
+                >
+                  {statusData.map((entry) => (
+                    <Cell fill={entry.fill} key={entry.key} />
+                  ))}
+                </Pie>
+              </PieChart>
+            </ChartContainer>
+          ) : (
+            <AnalyticsEmptyState />
+          )}
+          <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-[#fffeea]/58">
+            {statusData.map((item) => (
+              <div className="flex items-center justify-between gap-2" key={item.key}>
+                <span className="flex items-center gap-2">
+                  <span className="size-2 rounded-full" style={{ backgroundColor: item.fill }} />
+                  {item.name}
+                </span>
+                <span className="font-medium text-white">{item.value}</span>
+              </div>
+            ))}
+          </div>
+        </FieldCard>
+
+        <FieldCard className="p-5">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-base font-semibold text-white">Token movement</div>
+              <p className="mt-1 text-sm text-[#fffeea]/50">Claimed, currently claimable, and still locked.</p>
+            </div>
+          </div>
+          {activeStreams.length > 0 ? (
+            <ChartContainer className="mt-4 h-[246px]" config={analyticsChartConfig}>
+              <BarChart accessibilityLayer data={allocationData}>
+                <CartesianGrid stroke="rgba(255,254,234,0.08)" vertical={false} />
+                <XAxis axisLine={false} dataKey="name" tickLine={false} tickMargin={10} />
+                <YAxis axisLine={false} tickFormatter={(value) => Number(value).toLocaleString("en-US")} tickLine={false} width={72} />
+                <ChartTooltip
+                  content={
+                    <ChartTooltipContent
+                      config={analyticsChartConfig}
+                      valueFormatter={(_, item) => String(item.payload?.valueLabel ?? "0")}
+                    />
+                  }
+                />
+                <Bar dataKey="claimed" fill="var(--color-claimed)" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="claimable" fill="var(--color-claimable)" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="locked" fill="var(--color-locked)" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ChartContainer>
+          ) : (
+            <AnalyticsEmptyState />
+          )}
+        </FieldCard>
+      </div>
+
+      <FieldCard className="p-5">
+        <div className="flex flex-col gap-1">
+          <div className="text-base font-semibold text-white">Schedule timeline</div>
+          <p className="text-sm text-[#fffeea]/50">Earliest stream start dates in the selected view.</p>
+        </div>
+        {timelineData.length > 0 ? (
+          <ChartContainer className="mt-4 h-[230px]" config={analyticsChartConfig}>
+            <AreaChart accessibilityLayer data={timelineData}>
+              <CartesianGrid stroke="rgba(255,254,234,0.08)" vertical={false} />
+              <XAxis axisLine={false} dataKey="name" tickLine={false} tickMargin={10} />
+              <YAxis axisLine={false} tickFormatter={(value) => Number(value).toLocaleString("en-US")} tickLine={false} width={72} />
+              <ChartTooltip
+                content={
+                  <ChartTooltipContent
+                    config={analyticsChartConfig}
+                    valueFormatter={(_, item) => String(item.payload?.valueLabel ?? "0")}
+                  />
+                }
+              />
+              <Area
+                dataKey="total"
+                fill="rgba(242,212,103,0.18)"
+                fillOpacity={1}
+                name="total"
+                stroke="var(--color-total)"
+                strokeWidth={2}
+                type="monotone"
+              />
+            </AreaChart>
+          </ChartContainer>
+        ) : (
+          <AnalyticsEmptyState />
+        )}
+      </FieldCard>
+    </section>
+  );
+}
+
+function AnalyticsEmptyState() {
+  return (
+    <div className="grid min-h-[230px] place-items-center text-center text-sm text-[#fffeea]/50">
+      No stream data for this view yet.
+    </div>
+  );
+}
+
+function DashboardMetric({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: string }) {
+  return (
+    <FieldCard className="flex min-h-[126px] flex-col justify-between p-5">
+      <span className="grid size-10 place-items-center rounded-full bg-[#13151a] text-[#f2d467]">
+        <Icon size={19} />
+      </span>
+      <span className="block">
+        <span className="block text-sm text-[#fffeea]/50">{label}</span>
+        <span className="mt-1 block truncate text-2xl font-semibold text-white">{value}</span>
+      </span>
+    </FieldCard>
+  );
+}
+
+function DashboardStreamRow({ stream }: { stream: StreamView }) {
+  const metadata = useVestingMetadata();
+
+  return (
+    <Link
+      className="flex items-center justify-between gap-4 py-4 transition-colors hover:bg-[#13151a]"
+      href={`/contract/solana/devnet/${stream.publicKey.toBase58()}`}
+    >
+      <span className="flex min-w-0 items-center gap-3">
+        <TokenIcon />
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-semibold text-white">{streamTitle(stream, metadata)}</span>
+          <span className="mt-1 block text-xs text-[#fffeea]/50">
+            {stream.recipient.toBase58().slice(0, 5)}...{stream.recipient.toBase58().slice(-5)} · {formatDate(stream.startTimestamp)}
+          </span>
+        </span>
+      </span>
+      <span className="shrink-0 rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">{streamStatusLabel(stream)}</span>
+    </Link>
   );
 }
 
@@ -1171,45 +1616,65 @@ function ClaimTable({
         </thead>
         <tbody>
           {streams.map((stream) => (
-            <tr className="transition hover:bg-[#13151a]" key={stream.publicKey.toBase58()}>
-              <td className="px-3 py-5">
-                <div className="flex items-center gap-3">
-                  <TokenIcon />
-                  <div>
-                    <div className="font-semibold text-white">{formatTokenAmount(stream.claimableAmount)}</div>
-                    <div className="mt-1 text-xs text-[#fffeea]/50">of {formatTokenAmount(stream.totalAmount)} tokens</div>
-                  </div>
-                </div>
-              </td>
-              <td className="px-3 py-5 font-medium text-white">{scheduleLabel(stream.scheduleType)}</td>
-              <td className="px-3 py-5">
-                <span className="inline-flex items-center gap-1 font-semibold text-white">
-                  {stream.recipient.toBase58().slice(0, 5)}...{stream.recipient.toBase58().slice(-5)}
-                  <Copy className="text-[#fffeea]/55" size={14} />
-                </span>
-              </td>
-              <td className="px-3 py-5">
-                <span className="rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">{streamStatusLabel(stream)}</span>
-              </td>
-              <td className="px-3 py-5">
-                <span className="inline-flex items-center gap-1 font-semibold text-white">
-                  {formatDate(stream.startTimestamp)}
-                  <Info className="text-[#fffeea]/50" size={16} />
-                </span>
-              </td>
-              <td className="px-3 py-5 text-[#fffeea]/62">
-                <PrimaryButton
-                  disabled={stream.claimableAmount === BigInt(0) || busyStream === stream.publicKey.toBase58()}
-                  onClick={() => void onWithdraw(stream)}
-                >
-                  {busyStream === stream.publicKey.toBase58() ? "Claiming..." : "Claim"}
-                </PrimaryButton>
-              </td>
-            </tr>
+            <ClaimTableRow
+              busyStream={busyStream}
+              key={stream.publicKey.toBase58()}
+              onWithdraw={onWithdraw}
+              stream={stream}
+            />
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+function ClaimTableRow({
+  stream,
+  onWithdraw,
+  busyStream,
+}: {
+  stream: StreamView;
+  onWithdraw: (stream: StreamView) => Promise<void>;
+  busyStream: string | null;
+}) {
+  const isBusy = busyStream === stream.publicKey.toBase58();
+  const canClaim = stream.status === "Active" && stream.claimableAmount > BigInt(0);
+  const claimLabel = stream.status !== "Active" ? streamStatusLabel(stream) : isBusy ? "Claiming..." : "Claim";
+
+  return (
+    <tr className="transition hover:bg-[#13151a]">
+      <td className="px-3 py-5">
+        <div className="flex items-center gap-3">
+          <TokenIcon />
+          <div>
+            <div className="font-semibold text-white">{formatTokenAmount(stream.claimableAmount)}</div>
+            <div className="mt-1 text-xs text-[#fffeea]/50">of {formatTokenAmount(stream.totalAmount)} tokens</div>
+          </div>
+        </div>
+      </td>
+      <td className="px-3 py-5 font-medium text-white">{scheduleLabel(stream.scheduleType)}</td>
+      <td className="px-3 py-5">
+        <span className="inline-flex items-center gap-1 font-semibold text-white">
+          {stream.recipient.toBase58().slice(0, 5)}...{stream.recipient.toBase58().slice(-5)}
+          <Copy className="text-[#fffeea]/55" size={14} />
+        </span>
+      </td>
+      <td className="px-3 py-5">
+        <span className="rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">{streamStatusLabel(stream)}</span>
+      </td>
+      <td className="px-3 py-5">
+        <span className="inline-flex items-center gap-1 font-semibold text-white">
+          {formatDate(stream.startTimestamp)}
+          <Info className="text-[#fffeea]/50" size={16} />
+        </span>
+      </td>
+      <td className="px-3 py-5 text-[#fffeea]/62">
+        <PrimaryButton disabled={!canClaim || isBusy} onClick={() => void onWithdraw(stream)}>
+          {claimLabel}
+        </PrimaryButton>
+      </td>
+    </tr>
   );
 }
 
