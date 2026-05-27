@@ -331,6 +331,8 @@ function deriveVault(streamConfig: PublicKey) {
 }
 
 function computeClaimable(stream: StreamAccount) {
+  if (enumName(stream.status, "Active") !== "Active") return BigInt(0);
+
   const now = Math.floor(Date.now() / 1000);
   const total = decodeAmount(stream.totalAmount);
   const claimed = decodeAmount(stream.amountClaimed);
