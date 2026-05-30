@@ -116,12 +116,6 @@ type SelectOption = {
   value: string;
 };
 
-const durationUnitOptions: SelectOption[] = [
-  { label: "Month", value: "Month" },
-  { label: "Week", value: "Week" },
-  { label: "Day", value: "Day" },
-];
-
 const unlockScheduleOptions: SelectOption[] = [
   { label: "Monthly", value: "Monthly" },
   { label: "Weekly", value: "Weekly" },
@@ -148,6 +142,9 @@ type VestingDraft = {
   tokenMint: string;
   recipient: string;
   amount: string;
+  startDateTime: string;
+  endDateTime: string;
+  cliffDateTime: string;
   duration: number;
   durationUnit: string;
   startsImmediately: boolean;
@@ -156,6 +153,21 @@ type VestingDraft = {
   milestoneDescription: string;
   cancellable: boolean;
 };
+
+type TransactionStage = "idle" | "wallet_approval" | "sending" | "confirming" | "success" | "error";
+
+function transactionStageLabel(stage: TransactionStage) {
+  if (stage === "wallet_approval") return "Approve in wallet...";
+  if (stage === "sending") return "Sending transaction...";
+  if (stage === "confirming") return "Confirming on devnet...";
+  if (stage === "success") return "Transaction confirmed.";
+  if (stage === "error") return "Transaction failed.";
+  return null;
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 const vestingDraftStorageKey = "velora-vesting-draft";
 const vestingMetadataStorageKey = "velora-vesting-metadata";
@@ -168,6 +180,9 @@ const defaultVestingDraft: VestingDraft = {
   tokenMint: veloraDevnetMint,
   recipient: "",
   amount: "1000",
+  startDateTime: "",
+  endDateTime: "",
+  cliffDateTime: "",
   duration: 12,
   durationUnit: "Month",
   startsImmediately: true,
@@ -177,12 +192,52 @@ const defaultVestingDraft: VestingDraft = {
   cancellable: true,
 };
 
+function dateToLocalInputValue(date: Date) {
+  const offsetMs = date.getTimezoneOffset() * 60 * 1000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function parseLocalDateTime(value: string, label: string) {
+  if (!value.trim()) throw new Error(`${label} is required.`);
+  const timestamp = Math.floor(new Date(value).getTime() / 1000);
+  if (!Number.isFinite(timestamp)) throw new Error(`${label} must be a valid date and time.`);
+  return timestamp;
+}
+
+function formatDraftDate(value: string) {
+  if (!value) return "Not set";
+  const timestamp = Math.floor(new Date(value).getTime() / 1000);
+  if (!Number.isFinite(timestamp)) return "Invalid date";
+  return formatDate(timestamp);
+}
+
+function defaultCliffDateTime(draft: VestingDraft) {
+  const start = draft.startDateTime ? new Date(draft.startDateTime) : new Date();
+  const end = draft.endDateTime ? new Date(draft.endDateTime) : new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const midpoint = new Date(start.getTime() + Math.max(60 * 60 * 1000, Math.floor((end.getTime() - start.getTime()) / 3)));
+  return dateToLocalInputValue(midpoint < end ? midpoint : new Date(start.getTime() + 24 * 60 * 60 * 1000));
+}
+
+function withDraftDateDefaults(draft: VestingDraft) {
+  if (draft.startDateTime && draft.endDateTime) return draft;
+  const now = new Date();
+  const start = new Date(now.getTime() + 10 * 60 * 1000);
+  const end = new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000);
+  return {
+    ...draft,
+    startDateTime: draft.startDateTime || dateToLocalInputValue(start),
+    endDateTime: draft.endDateTime || dateToLocalInputValue(end),
+  };
+}
+
 function readVestingDraft(): VestingDraft {
   if (typeof window === "undefined") return defaultVestingDraft;
   try {
-    return { ...defaultVestingDraft, ...JSON.parse(localStorage.getItem(vestingDraftStorageKey) ?? "{}") };
+    const parsed = JSON.parse(localStorage.getItem(vestingDraftStorageKey) ?? "{}") as Partial<VestingDraft>;
+    const draft = { ...defaultVestingDraft, ...parsed };
+    return withDraftDateDefaults(draft);
   } catch {
-    return defaultVestingDraft;
+    return withDraftDateDefaults(defaultVestingDraft);
   }
 }
 
@@ -191,7 +246,12 @@ function saveVestingDraft(draft: VestingDraft) {
 }
 
 function useVestingDraft() {
-  const [draft, setDraftState] = useState<VestingDraft>(() => readVestingDraft());
+  const [draft, setDraftState] = useState<VestingDraft>(defaultVestingDraft);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDraftState(readVestingDraft()), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   const setDraft = (patch: Partial<VestingDraft>) => {
     setDraftState((current) => {
@@ -281,6 +341,25 @@ function streamStatusLabel(stream: StreamView) {
   if (stream.status === "Completed") return "Completed";
   const now = Math.floor(Date.now() / 1000);
   return stream.startTimestamp > now ? "Scheduled" : "Ongoing";
+}
+
+function formatTimeDistance(seconds: number) {
+  const absSeconds = Math.max(0, seconds);
+  const days = Math.floor(absSeconds / 86_400);
+  const hours = Math.floor((absSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((absSeconds % 3_600) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${Math.max(1, minutes)}m`;
+}
+
+function timeRemainingLabel(stream: StreamView) {
+  if (stream.status === "Cancelled") return "Canceled";
+  if (stream.status === "Completed") return "Completed";
+  const now = Math.floor(Date.now() / 1000);
+  if (now < stream.startTimestamp) return `Starts in ${formatTimeDistance(stream.startTimestamp - now)}`;
+  if (now >= stream.endTimestamp) return "Ended";
+  return formatTimeDistance(stream.endTimestamp - now);
 }
 
 function matchesTab(stream: StreamView, tab: string) {
@@ -428,18 +507,25 @@ function getBalanceIssue(balanceState: TokenBalanceState, requiredAmount: bigint
   return null;
 }
 
-function durationInDays(draft: VestingDraft) {
-  if (draft.durationUnit === "Week") return draft.duration * 7;
-  if (draft.durationUnit === "Month") return draft.duration * 30;
-  return draft.duration;
-}
-
 function getScheduleIssue(draft: VestingDraft) {
-  if (draft.scheduleType !== "CliffLinear") return null;
-  const totalDays = durationInDays(draft);
-  if (draft.cliffDelayDays >= totalDays) {
-    return "Cliff delay must be shorter than the total vesting duration.";
+  if (!draft.endDateTime) return "Choose a vesting end date.";
+
+  if (!draft.startsImmediately && !draft.startDateTime) return "Choose a vesting start date.";
+
+  const startTimestamp = draft.startsImmediately ? Math.floor(Date.now() / 1000) : Math.floor(new Date(draft.startDateTime).getTime() / 1000);
+  const endTimestamp = Math.floor(new Date(draft.endDateTime).getTime() / 1000);
+  if (!Number.isFinite(startTimestamp) || !Number.isFinite(endTimestamp)) return "Choose valid vesting dates.";
+  if (endTimestamp <= startTimestamp) return "Vesting end date must be after the start date.";
+
+  if (draft.scheduleType === "CliffLinear") {
+    if (!draft.cliffDateTime) return "Choose a cliff date.";
+    const cliffTimestamp = Math.floor(new Date(draft.cliffDateTime).getTime() / 1000);
+    if (!Number.isFinite(cliffTimestamp)) return "Choose a valid cliff date.";
+    if (cliffTimestamp <= startTimestamp || cliffTimestamp >= endTimestamp) {
+      return "Cliff date must be after the start date and before the end date.";
+    }
   }
+
   return null;
 }
 
@@ -955,6 +1041,9 @@ function DashboardOverview({
   const totalClaimableAmount = recipientStreams.reduce((total, stream) => total + stream.claimableAmount, BigInt(0));
   const readyToClaimCount = recipientStreams.filter((stream) => stream.claimableAmount > BigInt(0)).length;
   const recentCreatorStreams = creatorStreams.slice(0, 4);
+  const dashboardStreams = [...creatorStreams, ...recipientStreams]
+    .filter((stream, index, items) => items.findIndex((item) => item.publicKey.equals(stream.publicKey)) === index)
+    .slice(0, 6);
 
   return (
     <section className="flex w-full flex-col gap-5">
@@ -991,14 +1080,30 @@ function DashboardOverview({
         <>
           <DashboardAnalytics creatorStreams={creatorStreams} recipientStreams={recipientStreams} />
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <DashboardMetric icon={Timer} label="Created streams" value={String(creatorStreams.length)} />
-            <DashboardMetric icon={ArrowUp} label="Total scheduled" value={formatTokenAmount(totalCreatedAmount)} />
-            <DashboardMetric icon={Check} label="Claimed from created" value={formatTokenAmount(totalClaimedAmount)} />
-            <DashboardMetric icon={PackageOpen} label="Ready to claim" value={formatTokenAmount(totalClaimableAmount)} />
-          </div>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <DashboardMetric icon={Timer} label="Created streams" value={String(creatorStreams.length)} />
+              <DashboardMetric icon={ArrowUp} label="Total scheduled" value={formatTokenAmount(totalCreatedAmount)} />
+              <DashboardMetric icon={Check} label="Claimed from created" value={formatTokenAmount(totalClaimedAmount)} />
+              <DashboardMetric icon={PackageOpen} label="Ready to claim" value={formatTokenAmount(totalClaimableAmount)} />
+            </div>
 
-          <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.35fr_0.95fr]">
+            <FieldCard className="p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-white">All connected streams</h3>
+                  <p className="mt-1 text-sm text-[#fffeea]/55">Streams where this wallet is creator or recipient.</p>
+                </div>
+              </div>
+              <div className="mt-4 divide-y divide-[#fffeea]/12">
+                {dashboardStreams.length > 0 ? (
+                  dashboardStreams.map((stream) => <DashboardStreamRow key={stream.publicKey.toBase58()} stream={stream} />)
+                ) : (
+                  <div className="py-8 text-sm text-[#fffeea]/58">No streams found for this wallet.</div>
+                )}
+              </div>
+            </FieldCard>
+
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.35fr_0.95fr]">
             <FieldCard className="min-h-[316px] p-5">
               <div className="flex items-start justify-between gap-4">
                 <div>
@@ -1303,15 +1408,21 @@ function DashboardStreamRow({ stream }: { stream: StreamView }) {
       className="flex items-center justify-between gap-4 py-4 transition-colors hover:bg-[#13151a]"
       href={`/contract/solana/devnet/${stream.publicKey.toBase58()}`}
     >
-      <span className="flex min-w-0 items-center gap-3">
-        <TokenIcon />
-        <span className="min-w-0">
-          <span className="block truncate text-sm font-semibold text-white">{streamTitle(stream, metadata)}</span>
-          <span className="mt-1 block text-xs text-[#fffeea]/50">
-            {stream.recipient.toBase58().slice(0, 5)}...{stream.recipient.toBase58().slice(-5)} · {formatDate(stream.startTimestamp)}
+        <span className="flex min-w-0 items-center gap-3">
+          <TokenIcon />
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-semibold text-white">{streamTitle(stream, metadata)}</span>
+            <span className="mt-1 block text-xs text-[#fffeea]/50">
+              {stream.recipient.toBase58().slice(0, 5)}...{stream.recipient.toBase58().slice(-5)} · {formatDate(stream.startTimestamp)}
+            </span>
+            <span className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-[#fffeea]/48">
+              <span>Total {formatTokenAmount(stream.totalAmount)}</span>
+              <span>Unlocked {formatTokenAmount(stream.unlockedAmount)}</span>
+              <span>Claimed {formatTokenAmount(stream.amountClaimed)}</span>
+              <span>{timeRemainingLabel(stream)}</span>
+            </span>
           </span>
         </span>
-      </span>
       <span className="shrink-0 rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">{streamStatusLabel(stream)}</span>
     </Link>
   );
@@ -1435,10 +1546,10 @@ function VestingEmptyState() {
 
 function VestingTable({ streams }: { streams: StreamView[] }) {
   const metadata = useVestingMetadata();
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [openMenuStream, setOpenMenuStream] = useState<string | null>(null);
   const columns = ["Amount", "Contract", "Type", "Transaction", "Recipient", "Status", "Start date"];
   return (
-    <div className="overflow-visible">
+    <div className="overflow-x-auto">
       <table className="w-full min-w-[960px] text-left text-sm">
         <thead className="text-[#fffeea]/50">
           <tr>
@@ -1450,15 +1561,17 @@ function VestingTable({ streams }: { streams: StreamView[] }) {
             <th className="px-3 py-4" />
           </tr>
         </thead>
-        <tbody>
-          {streams.map((stream) => (
-            <tr className="cursor-pointer border-t border-[#fffeea]/12 transition hover:bg-[#13151a]" key={stream.publicKey.toBase58()} onClick={() => (window.location.href = `/contract/solana/devnet/${stream.publicKey.toBase58()}`)}>
+	        <tbody>
+	          {streams.map((stream) => (
+	            <tr className="cursor-pointer border-t border-[#fffeea]/12 transition hover:bg-[#13151a]" key={stream.publicKey.toBase58()} onClick={() => (window.location.href = `/contract/solana/devnet/${stream.publicKey.toBase58()}`)}>
               <td className="px-3 py-5">
                 <div className="flex items-center gap-3">
                   <TokenIcon />
                   <div>
                     <div className="font-semibold text-white">{formatTokenAmount(stream.totalAmount)}</div>
-                    <div className="text-xs text-[#fffeea]/50">tokens</div>
+                    <div className="mt-1 text-xs text-[#fffeea]/50">
+                      Unlocked {formatTokenAmount(stream.unlockedAmount)} · Claimed {formatTokenAmount(stream.amountClaimed)}
+                    </div>
                   </div>
                 </div>
               </td>
@@ -1471,22 +1584,23 @@ function VestingTable({ streams }: { streams: StreamView[] }) {
               <td className="px-3 py-5 font-medium text-white">{stream.recipient.toBase58().slice(0, 5)}...{stream.recipient.toBase58().slice(-5)}</td>
               <td className="px-3 py-5">
                 <span className="rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">{streamStatusLabel(stream)}</span>
+                <div className="mt-2 text-xs text-[#fffeea]/50">{timeRemainingLabel(stream)}</div>
               </td>
               <td className="px-3 py-5 font-medium text-white">{formatDate(stream.startTimestamp)}</td>
               <td className="relative px-3 py-5 text-[#fffeea]/62">
                 <button
-                  aria-expanded={menuOpen}
+                  aria-expanded={openMenuStream === stream.publicKey.toBase58()}
                   aria-label="Open contract actions"
                   className="grid size-8 place-items-center rounded-[4px] text-[#fffeea]/62 transition hover:bg-[#13151a] hover:text-[#fffeea]"
                   onClick={(event) => {
                     event.stopPropagation();
-                    setMenuOpen((open) => !open);
+                    setOpenMenuStream((current) => (current === stream.publicKey.toBase58() ? null : stream.publicKey.toBase58()));
                   }}
                   type="button"
                 >
                   <MoreHorizontal size={20} />
                 </button>
-                {menuOpen ? (
+                {openMenuStream === stream.publicKey.toBase58() ? (
                   <div
                     className="absolute right-3 top-12 z-50 w-48 overflow-hidden rounded-[4px] border border-[#fffeea]/16 bg-[#13151a] py-1 text-sm text-[#fffeea]/82 shadow-2xl shadow-black/50"
                     onClick={(event) => event.stopPropagation()}
@@ -1512,6 +1626,8 @@ export function ClaimPage() {
   const tabs = ["Vesting"];
   const { streams, walletPublicKey, loadingStreams, error, connect, withdraw } = useVeloraChain();
   const [busyStream, setBusyStream] = useState<string | null>(null);
+  const [transactionStage, setTransactionStage] = useState<TransactionStage>("idle");
+  const [actionError, setActionError] = useState<string | null>(null);
   const claimableStreams = useMemo(
     () => streams.filter((stream) => walletPublicKey && stream.recipient.equals(walletPublicKey)),
     [streams, walletPublicKey],
@@ -1557,6 +1673,12 @@ export function ClaimPage() {
         </div>
 
         {error ? <FieldCard className="p-4 text-sm text-red-300">{error}</FieldCard> : null}
+        {actionError ? <FieldCard className="p-4 text-sm text-red-300">{actionError}</FieldCard> : null}
+        {transactionStage !== "idle" ? (
+          <FieldCard className={`p-4 text-sm ${transactionStage === "error" ? "text-red-300" : "text-[#fffeea]/70"}`}>
+            {transactionStageLabel(transactionStage)}
+          </FieldCard>
+        ) : null}
         {!walletPublicKey ? (
           <ConnectState title="Connect wallet" text="Connect the recipient wallet to see claimable vesting contracts." action={connect} />
         ) : loadingStreams ? (
@@ -1566,8 +1688,20 @@ export function ClaimPage() {
             busyStream={busyStream}
             onWithdraw={async (stream) => {
               setBusyStream(stream.publicKey.toBase58());
+              setTransactionStage("wallet_approval");
+              setActionError(null);
               try {
+                await delay(150);
+                setTransactionStage("sending");
                 await withdraw(stream);
+                setTransactionStage("confirming");
+                await delay(150);
+                setTransactionStage("success");
+                await delay(900);
+                setTransactionStage("idle");
+              } catch (withdrawError) {
+                setTransactionStage("error");
+                setActionError(withdrawError instanceof Error ? withdrawError.message : "Could not claim available tokens.");
               } finally {
                 setBusyStream(null);
               }
@@ -1644,12 +1778,14 @@ function ClaimTableRow({
 
   return (
     <tr className="transition hover:bg-[#13151a]">
-      <td className="px-3 py-5">
-        <div className="flex items-center gap-3">
-          <TokenIcon />
+	      <td className="px-3 py-5">
+	        <div className="flex items-center gap-3">
+	          <TokenIcon />
           <div>
             <div className="font-semibold text-white">{formatTokenAmount(stream.claimableAmount)}</div>
-            <div className="mt-1 text-xs text-[#fffeea]/50">of {formatTokenAmount(stream.totalAmount)} tokens</div>
+            <div className="mt-1 text-xs text-[#fffeea]/50">
+              of {formatTokenAmount(stream.totalAmount)} · Unlocked {formatTokenAmount(stream.unlockedAmount)}
+            </div>
           </div>
         </div>
       </td>
@@ -1662,6 +1798,7 @@ function ClaimTableRow({
       </td>
       <td className="px-3 py-5">
         <span className="rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">{streamStatusLabel(stream)}</span>
+        <div className="mt-2 text-xs text-[#fffeea]/50">{timeRemainingLabel(stream)}</div>
       </td>
       <td className="px-3 py-5">
         <span className="inline-flex items-center gap-1 font-semibold text-white">
@@ -1754,7 +1891,13 @@ export function TypePage() {
               aria-pressed={selected}
               className="group text-left"
               key={option.scheduleType}
-              onClick={() => setDraft({ scheduleType: option.scheduleType })}
+                onClick={() =>
+                  setDraft({
+                    scheduleType: option.scheduleType,
+                    cliffEnabled: option.scheduleType === "CliffLinear",
+                    cliffDateTime: option.scheduleType === "CliffLinear" ? draft.cliffDateTime || defaultCliffDateTime(draft) : draft.cliffDateTime,
+                  })
+                }
               type="button"
             >
               <FieldCard
@@ -1840,14 +1983,15 @@ function SelectBox({
 }
 
 export function ConfigurationPage() {
+  const hydrated = useHydrated();
   const { draft, setDraft } = useVestingDraft();
   const tokenBalance = useSelectedTokenBalance(draft.tokenMint);
   const [unlockSchedule, setUnlockSchedule] = useState("Monthly");
   const [recipientChange, setRecipientChange] = useState("Only Sender");
   const [autoClaim, setAutoClaim] = useState(true);
-  const durationSummary = `${draft.duration} ${draft.durationUnit.toLowerCase()}${draft.duration === 1 ? "" : "s"}`;
-  const scheduleIssue = getScheduleIssue(draft);
-  const canContinue = tokenBalance.status === "ready" && !scheduleIssue;
+  const dateSummary = `${formatDraftDate(draft.startDateTime)} - ${formatDraftDate(draft.endDateTime)}`;
+  const scheduleIssue = hydrated ? getScheduleIssue(draft) : null;
+  const canContinue = hydrated && tokenBalance.status === "ready" && !scheduleIssue;
   const permissionSummary = [
     draft.cancellable ? "Cancellable" : "Non-cancellable",
     draft.scheduleType === "Milestone" ? "Milestone release" : `${scheduleLabel(draft.scheduleType)} schedule`,
@@ -1906,23 +2050,6 @@ export function ConfigurationPage() {
                     <BalanceNotice state={tokenBalance} />
                   </div>
                 </div>
-                <div>
-                  <label className="text-sm font-semibold">Vesting duration*</label>
-                  <div className="mt-2 grid grid-cols-[1fr_128px] gap-3">
-                    <div className="flex h-12 items-center rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] px-4 focus-within:border-[#f2d467]">
-                      <input
-                        aria-label="Vesting duration"
-                        className="min-w-0 flex-1 bg-transparent text-sm text-white outline-none"
-                        max={60}
-                        min={1}
-                        onChange={(event) => setDraft({ duration: Math.max(1, Math.min(60, Number(event.target.value) || 1)) })}
-                        type="number"
-                        value={draft.duration}
-                      />
-                    </div>
-                    <SelectBox onChange={(value) => setDraft({ durationUnit: value })} options={durationUnitOptions} value={draft.durationUnit} />
-                  </div>
-                </div>
                 {draft.scheduleType === "Milestone" ? (
                   <div>
                     <label className="text-sm font-semibold text-white">Unlock schedule</label>
@@ -1938,20 +2065,21 @@ export function ConfigurationPage() {
             <section className="grid gap-5 md:grid-cols-2">
               <div>
                 <h2 className="text-sm font-semibold text-[#fffeea]/78">Vesting start date</h2>
-                <FieldCard className="mt-2 flex min-h-[92px] items-center justify-between gap-4 p-4">
-                  <div>
-                    <div className="text-sm font-semibold">{draft.startsImmediately ? "Upon contract creation" : "Schedule manually"}</div>
-                    <div className="mt-1 text-xs text-[#fffeea]/50">
-                      {draft.startsImmediately ? "The unlock period begins once the contract is created" : "The contract will wait for a selected start date"}
+                <FieldCard className="mt-2 flex min-h-[168px] flex-col gap-4 p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-semibold">{draft.startsImmediately ? "Upon contract creation" : "Schedule manually"}</div>
+                      <div className="mt-1 text-xs text-[#fffeea]/50">
+                        {draft.startsImmediately ? "The unlock period begins when the stream is created." : "The stream waits until the selected start date."}
+                      </div>
                     </div>
+                    <Toggle enabled={draft.startsImmediately} label="Toggle immediate start" onChange={(enabled) => setDraft({ startsImmediately: enabled })} />
                   </div>
-                  <Toggle enabled={draft.startsImmediately} label="Toggle immediate start" onChange={(enabled) => setDraft({ startsImmediately: enabled })} />
+                  {!draft.startsImmediately ? (
+                    <DateTimeInput label="Start date*" onChange={(value) => setDraft({ startDateTime: value })} value={draft.startDateTime} />
+                  ) : null}
+                  <DateTimeInput label="End date*" onChange={(value) => setDraft({ endDateTime: value })} value={draft.endDateTime} />
                 </FieldCard>
-                {!draft.startsImmediately ? (
-                  <div className="mt-3 flex h-12 items-center rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] px-4 text-sm text-[#fffeea]/78">
-                    May 22, 2026 at 2:00 PM
-                  </div>
-                ) : null}
               </div>
               {draft.scheduleType === "Milestone" ? (
                 <div>
@@ -1990,25 +2118,31 @@ export function ConfigurationPage() {
                           {draft.cliffEnabled || draft.scheduleType === "CliffLinear" ? "Tokens stay locked until the cliff delay passes." : "Linear vesting starts immediately."}
                         </div>
                       </div>
-                      <Toggle enabled={draft.cliffEnabled || draft.scheduleType === "CliffLinear"} label="Toggle cliff" onChange={(enabled) => setDraft({ cliffEnabled: enabled, scheduleType: enabled ? "CliffLinear" : "Linear" })} />
+                      <Toggle
+                        enabled={draft.cliffEnabled || draft.scheduleType === "CliffLinear"}
+                        label="Toggle cliff"
+                        onChange={(enabled) =>
+                          setDraft({
+                            cliffEnabled: enabled,
+                            scheduleType: enabled ? "CliffLinear" : "Linear",
+                            cliffDateTime: enabled ? draft.cliffDateTime || defaultCliffDateTime(draft) : "",
+                          })
+                        }
+                      />
                     </div>
                     {draft.cliffEnabled || draft.scheduleType === "CliffLinear" ? (
-                      <label>
-                        <span className="text-xs font-medium text-[#fffeea]/48">Cliff delay</span>
-                        <span className="mt-2 grid h-12 grid-cols-[1fr_92px_auto] items-center gap-3 rounded-[4px] border border-[#fffeea]/14 bg-[#06070a] px-4 text-sm focus-within:border-[#f2d467]">
-                          <span className="text-[#fffeea]/50">Lock period</span>
+                      <label className="block">
+                        <span className="text-xs font-medium text-[#fffeea]/48">Cliff date</span>
+                        <span className="mt-2 flex h-12 items-center rounded-[4px] border border-[#fffeea]/14 bg-[#06070a] px-4 focus-within:border-[#f2d467]">
                           <input
-                            aria-label="Cliff delay days"
-                            className="min-w-0 bg-transparent text-right font-semibold text-white outline-none"
-                            min={1}
-                            onChange={(event) => setDraft({ cliffDelayDays: Math.max(1, Number(event.target.value) || 1) })}
-                            type="number"
-                            value={draft.cliffDelayDays}
+                            className="min-w-0 flex-1 bg-transparent text-sm text-[#fffeea] outline-none [color-scheme:dark]"
+                            onChange={(event) => setDraft({ cliffDateTime: event.target.value })}
+                            type="datetime-local"
+                            value={draft.cliffDateTime}
                           />
-                          <span className="text-[#fffeea]/50">days</span>
                         </span>
                         <span className="mt-2 block text-xs leading-5 text-[#fffeea]/45">
-                          Cliff must be earlier than the vesting end date.
+                          Cliff must be after the start date and before the end date.
                         </span>
                       </label>
                     ) : (
@@ -2059,11 +2193,10 @@ export function ConfigurationPage() {
                 <SummaryItem label="Wallet balance">
                   {tokenBalance.balance ? `${formatTokenAmount(tokenBalance.balance.amount)} tokens` : tokenBalance.message}
                 </SummaryItem>
-                <SummaryItem label="Duration">{durationSummary}</SummaryItem>
+                <SummaryItem label="Vesting window">{draft.startsImmediately ? `Upon creation - ${formatDraftDate(draft.endDateTime)}` : dateSummary}</SummaryItem>
                 <SummaryItem label="Unlock schedule">{draft.scheduleType === "Milestone" ? "Manual release" : unlockSchedule}</SummaryItem>
-                <SummaryItem label="Start date">{draft.startsImmediately ? "Upon contract creation" : "May 22, 2026 at 2:00 PM"}</SummaryItem>
                 <SummaryItem label="Type">{scheduleLabel(draft.scheduleType)}</SummaryItem>
-                <SummaryItem label="Cliff">{draft.scheduleType === "CliffLinear" ? `${draft.cliffDelayDays} days` : "No cliff"}</SummaryItem>
+                <SummaryItem label="Cliff">{draft.scheduleType === "CliffLinear" ? formatDraftDate(draft.cliffDateTime) : "No cliff"}</SummaryItem>
                 {draft.scheduleType === "Milestone" ? <SummaryItem label="Milestone">{draft.milestoneDescription || "Manual release"}</SummaryItem> : null}
                 <SummaryItem label="Recipient changes">{recipientChange}</SummaryItem>
               </div>
@@ -2267,6 +2400,30 @@ function TextInput({
   );
 }
 
+function DateTimeInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="text-sm font-semibold">{label}</span>
+      <span className="mt-2 flex h-12 items-center rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] px-4 focus-within:border-[#f2d467]">
+        <input
+          className="min-w-0 flex-1 bg-transparent text-sm text-[#fffeea] outline-none [color-scheme:dark]"
+          onChange={(event) => onChange(event.target.value)}
+          type="datetime-local"
+          value={value}
+        />
+      </span>
+    </label>
+  );
+}
+
 function DetailGrid({ compact = false, draft = defaultVestingDraft }: { compact?: boolean; draft?: VestingDraft }) {
   const items: Array<{ label: string; value: string; long?: boolean }> = [
     { label: "Contract title", value: draft.contractTitle || "Vesting stream" },
@@ -2274,9 +2431,9 @@ function DetailGrid({ compact = false, draft = defaultVestingDraft }: { compact?
     { label: "Total amount", value: `${draft.amount} tokens` },
     { label: "Token", value: tokenLabel(draft) },
     { label: "Mint", value: draft.tokenMint ? shortenAddress(draft.tokenMint) : "Not set" },
-    { label: "Start time", value: draft.startsImmediately ? "Upon creation" : "Scheduled" },
-    { label: "Vesting duration", value: `${draft.duration} ${draft.durationUnit.toLowerCase()}${draft.duration === 1 ? "" : "s"}` },
-    { label: "Cliff", value: draft.scheduleType === "CliffLinear" ? `${draft.cliffDelayDays} days` : "No cliff" },
+    { label: "Start time", value: draft.startsImmediately ? "Upon creation" : formatDraftDate(draft.startDateTime) },
+    { label: "End time", value: formatDraftDate(draft.endDateTime) },
+    { label: "Cliff", value: draft.scheduleType === "CliffLinear" ? formatDraftDate(draft.cliffDateTime) : "No cliff" },
     { label: "Number of recipients", value: "1" },
     { label: "Milestone", value: draft.scheduleType === "Milestone" ? draft.milestoneDescription || "Manual release" : "Not used" },
     { label: "Cancellable", value: draft.cancellable ? "Enabled" : "Disabled" },
@@ -2305,6 +2462,7 @@ function InfoItem({ label, children }: { label: string; children: React.ReactNod
 export function ReviewPage() {
   const [successOpen, setSuccessOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [transactionStage, setTransactionStage] = useState<TransactionStage>("idle");
   const [submitError, setSubmitError] = useState<string | null>(null);
   const { draft } = useVestingDraft();
   const tokenBalance = useSelectedTokenBalance(draft.tokenMint);
@@ -2315,14 +2473,15 @@ export function ReviewPage() {
 
   const handleCreate = async () => {
     setSubmitting(true);
+    setTransactionStage("wallet_approval");
     setSubmitError(null);
     try {
       if (!walletPublicKey) await connect();
-      const now = Math.floor(Date.now() / 1000);
-      const durationMultiplier = draft.durationUnit === "Day" ? 86_400 : draft.durationUnit === "Week" ? 604_800 : 2_592_000;
-      const startTimestamp = now;
-      const endTimestamp = startTimestamp + draft.duration * durationMultiplier;
-      const cliffTimestamp = draft.scheduleType === "CliffLinear" ? startTimestamp + draft.cliffDelayDays * 86_400 : 0;
+      setTransactionStage("sending");
+      await delay(150);
+      const startTimestamp = draft.startsImmediately ? Math.floor(Date.now() / 1000) : parseLocalDateTime(draft.startDateTime, "Start date");
+      const endTimestamp = parseLocalDateTime(draft.endDateTime, "End date");
+      const cliffTimestamp = draft.scheduleType === "CliffLinear" ? parseLocalDateTime(draft.cliffDateTime, "Cliff date") : 0;
       const input: CreateStreamInput = {
         streamId: BigInt(Date.now()),
         mint: parsePublicKey(draft.tokenMint, "SPL mint"),
@@ -2336,6 +2495,7 @@ export function ReviewPage() {
         isCancellable: draft.cancellable,
       };
       const result = await createStream(input);
+      setTransactionStage("confirming");
       const title = draft.contractTitle || "Vesting stream";
       saveVestingMetadata([
         result.streamConfig.toBase58(),
@@ -2343,8 +2503,10 @@ export function ReviewPage() {
       ], {
         title,
       });
+      setTransactionStage("success");
       setSuccessOpen(true);
     } catch (error) {
+      setTransactionStage("error");
       setSubmitError(error instanceof Error ? error.message : "Could not create vesting stream.");
     } finally {
       setSubmitting(false);
@@ -2371,6 +2533,9 @@ export function ReviewPage() {
         </FieldCard>
         <BalanceNotice issue={balanceIssue} state={tokenBalance} />
         {scheduleIssue ? <FieldCard className="p-4 text-sm text-amber-200">{scheduleIssue}</FieldCard> : null}
+        {transactionStage !== "idle" && transactionStage !== "error" ? (
+          <FieldCard className="p-4 text-sm text-[#fffeea]/70">{transactionStageLabel(transactionStage)}</FieldCard>
+        ) : null}
         {submitError ? <FieldCard className="p-4 text-sm text-red-300">{submitError}</FieldCard> : null}
         <h2 className="text-base font-semibold">Contract details</h2>
         <DetailGrid draft={draft} />
@@ -2418,6 +2583,9 @@ export function ContractDetailPage() {
   const { streams, walletPublicKey, cancel, releaseMilestone, withdraw } = useVeloraChain();
   const metadata = useVestingMetadata();
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [transactionStage, setTransactionStage] = useState<TransactionStage>("idle");
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
   const stream = streams.find((item) => item.publicKey.toBase58() === params.id);
   const isCreator = Boolean(stream && walletPublicKey?.equals(stream.creator));
   const isRecipient = Boolean(stream && walletPublicKey?.equals(stream.recipient));
@@ -2432,8 +2600,20 @@ export function ContractDetailPage() {
 
   const runAction = async (label: string, action: () => Promise<unknown>) => {
     setBusyAction(label);
+    setTransactionStage("wallet_approval");
+    setActionError(null);
     try {
+      await delay(150);
+      setTransactionStage("sending");
       await action();
+      setTransactionStage("confirming");
+      await delay(150);
+      setTransactionStage("success");
+      await delay(900);
+      setTransactionStage("idle");
+    } catch (error) {
+      setTransactionStage("error");
+      setActionError(error instanceof Error ? error.message : "Transaction failed.");
     } finally {
       setBusyAction(null);
     }
@@ -2471,11 +2651,11 @@ export function ContractDetailPage() {
                   Release milestone
                 </SecondaryButton>
               ) : null}
-              {isCreator && stream.status === "Active" && stream.isCancellable ? (
-                <SecondaryButton disabled={busyAction === "cancel"} onClick={() => void runAction("cancel", () => cancel(stream))}>
-                  Cancel
-                </SecondaryButton>
-              ) : null}
+                {isCreator && stream.status === "Active" && stream.isCancellable ? (
+                  <SecondaryButton disabled={busyAction === "cancel"} onClick={() => setCancelConfirmOpen(true)}>
+                    Cancel
+                  </SecondaryButton>
+                ) : null}
             </div>
           </div>
 
@@ -2496,23 +2676,32 @@ export function ContractDetailPage() {
               <div className="mt-2 text-lg font-semibold">{scheduleLabel(stream.scheduleType)}</div>
             </FieldCard>
           </div>
-        </div>
+          </div>
 
-        <hr className="border-[#fffeea]/12" />
+          {actionError ? <FieldCard className="p-4 text-sm text-red-300">{actionError}</FieldCard> : null}
+          {transactionStage !== "idle" ? (
+            <FieldCard className={`p-4 text-sm ${transactionStage === "error" ? "text-red-300" : "text-[#fffeea]/70"}`}>
+              {transactionStageLabel(transactionStage)}
+            </FieldCard>
+          ) : null}
+
+          <hr className="border-[#fffeea]/12" />
 
         <SectionTitle>Contract details</SectionTitle>
         <div className="grid gap-x-10 gap-y-7 md:grid-cols-3">
           <InfoItem label="Vesting type">{scheduleLabel(stream.scheduleType)}</InfoItem>
-          <InfoItem label="Total">
-            <span className="inline-flex items-center gap-2">
-              <TokenIcon size="size-4" /> {formatTokenAmount(stream.totalAmount)} <span className="text-xs text-[#fffeea]/42">tokens</span>
-            </span>
-          </InfoItem>
-          <InfoItem label="Claimed">{formatTokenAmount(stream.amountClaimed)}</InfoItem>
-          <InfoItem label="Claimable">{formatTokenAmount(stream.claimableAmount)}</InfoItem>
-          <InfoItem label="Start time">{formatDate(stream.startTimestamp)}</InfoItem>
-          <InfoItem label="End time">{formatDate(stream.endTimestamp)}</InfoItem>
-        </div>
+            <InfoItem label="Total">
+              <span className="inline-flex items-center gap-2">
+                <TokenIcon size="size-4" /> {formatTokenAmount(stream.totalAmount)} <span className="text-xs text-[#fffeea]/42">tokens</span>
+              </span>
+            </InfoItem>
+            <InfoItem label="Unlocked">{formatTokenAmount(stream.unlockedAmount)}</InfoItem>
+            <InfoItem label="Claimed">{formatTokenAmount(stream.amountClaimed)}</InfoItem>
+            <InfoItem label="Claimable">{formatTokenAmount(stream.claimableAmount)}</InfoItem>
+            <InfoItem label="Time remaining">{timeRemainingLabel(stream)}</InfoItem>
+            <InfoItem label="Start time">{formatDate(stream.startTimestamp)}</InfoItem>
+            <InfoItem label="End time">{formatDate(stream.endTimestamp)}</InfoItem>
+          </div>
 
         <hr className="border-[#fffeea]/12" />
 
@@ -2528,15 +2717,69 @@ export function ContractDetailPage() {
             {stream.mint.toBase58().slice(0, 5)}...{stream.mint.toBase58().slice(-5)} <Copy className="inline text-[#fffeea]/55" size={13} />
           </InfoItem>
           <InfoItem label="Who can cancel">{stream.isCancellable ? "Creator" : "Nobody"}</InfoItem>
-          <InfoItem label="Milestone">{stream.scheduleType === "Milestone" ? (stream.milestoneReleased ? "Released" : "Waiting") : "Not used"}</InfoItem>
-        </div>
-      </section>
-    </AppShell>
-  );
+            <InfoItem label="Milestone">{stream.scheduleType === "Milestone" ? (stream.milestoneReleased ? "Released" : "Waiting") : "Not used"}</InfoItem>
+          </div>
+        </section>
+        {cancelConfirmOpen ? (
+          <CancelConfirmationDialog
+            busy={busyAction === "cancel"}
+            onClose={() => setCancelConfirmOpen(false)}
+            onConfirm={() => {
+              setCancelConfirmOpen(false);
+              void runAction("cancel", () => cancel(stream));
+            }}
+            stream={stream}
+            title={streamTitle(stream, metadata)}
+          />
+        ) : null}
+      </AppShell>
+    );
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h2 className="text-lg font-semibold text-white">{children}</h2>;
+}
+
+function CancelConfirmationDialog({
+  busy,
+  onClose,
+  onConfirm,
+  stream,
+  title,
+}: {
+  busy: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  stream: StreamView;
+  title: string;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/64 px-4">
+      <div className="w-full max-w-[520px] rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] p-7 shadow-2xl">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold text-white">Cancel vesting stream?</h2>
+            <p className="mt-2 text-sm leading-5 text-[#fffeea]/58">
+              Unlocked tokens can go to the recipient and locked tokens return to the creator.
+            </p>
+          </div>
+          <button className="text-[#fffeea]/58 transition hover:text-white" onClick={onClose} type="button">
+            <X size={20} />
+          </button>
+        </div>
+        <FieldCard className="mt-6 grid gap-4 p-4 text-sm">
+          <SummaryItem label="Stream">{title}</SummaryItem>
+          <SummaryItem label="Total">{formatTokenAmount(stream.totalAmount)} tokens</SummaryItem>
+          <SummaryItem label="Unlocked">{formatTokenAmount(stream.unlockedAmount)} tokens</SummaryItem>
+          <SummaryItem label="Recipient">{stream.recipient.toBase58()}</SummaryItem>
+        </FieldCard>
+        <div className="mt-7 flex justify-end gap-3">
+          <SecondaryButton disabled={busy} onClick={onClose}>Keep stream</SecondaryButton>
+          <PrimaryButton disabled={busy} onClick={onConfirm}>{busy ? "Canceling..." : "Confirm cancel"}</PrimaryButton>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function PlaceholderPage({ title }: { title: string }) {

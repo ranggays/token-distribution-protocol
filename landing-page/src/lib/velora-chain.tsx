@@ -230,6 +230,7 @@ export type StreamView = {
   status: "Active" | "Cancelled" | "Completed";
   totalAmount: bigint;
   amountClaimed: bigint;
+  unlockedAmount: bigint;
   claimableAmount: bigint;
   startTimestamp: number;
   endTimestamp: number;
@@ -330,12 +331,9 @@ function deriveVault(streamConfig: PublicKey) {
   return PublicKey.findProgramAddressSync([Buffer.from("vault"), streamConfig.toBuffer()], PROGRAM_ID)[0];
 }
 
-function computeClaimable(stream: StreamAccount) {
-  if (enumName(stream.status, "Active") !== "Active") return BigInt(0);
-
+function computeUnlocked(stream: StreamAccount) {
   const now = Math.floor(Date.now() / 1000);
   const total = decodeAmount(stream.totalAmount);
-  const claimed = decodeAmount(stream.amountClaimed);
   const start = Number(stream.startTimestamp.toString());
   const end = Number(stream.endTimestamp.toString());
   const cliff = Number(stream.cliffTimestamp.toString());
@@ -351,6 +349,14 @@ function computeClaimable(stream: StreamAccount) {
     else unlocked = (total * BigInt(now - linearStart)) / BigInt(end - linearStart);
   }
 
+  return unlocked;
+}
+
+function computeClaimable(stream: StreamAccount) {
+  if (enumName(stream.status, "Active") !== "Active") return BigInt(0);
+
+  const unlocked = computeUnlocked(stream);
+  const claimed = decodeAmount(stream.amountClaimed);
   return unlocked > claimed ? unlocked - claimed : BigInt(0);
 }
 
@@ -366,6 +372,7 @@ function normalizeStream(publicKey: PublicKey, account: StreamAccount): StreamVi
     status: enumName(account.status, "Active") as StreamView["status"],
     totalAmount: decodeAmount(account.totalAmount),
     amountClaimed: decodeAmount(account.amountClaimed),
+    unlockedAmount: computeUnlocked(account),
     claimableAmount: computeClaimable(account),
     startTimestamp: Number(account.startTimestamp.toString()),
     endTimestamp: Number(account.endTimestamp.toString()),
