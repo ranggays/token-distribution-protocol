@@ -9,11 +9,13 @@ import {
   CalendarDays,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CirclePlay,
   Copy,
   FileText,
   Filter,
+  HelpCircle,
   Home,
   Hourglass,
   Info,
@@ -105,6 +107,63 @@ const getStartedActions = [
     href: "/claim",
     icon: PackageOpen,
     action: "View claims",
+  },
+];
+
+const protocolTutorialSteps = [
+  {
+    eyebrow: "Start here",
+    title: "Connect your wallet",
+    description:
+      "Use the wallet button in the top bar to connect a Solana wallet. Velora reads created streams and claimable vesting from the connected address.",
+    points: ["Creators use it to fund and manage vesting streams.", "Recipients use it to find allocations that can be claimed."],
+    href: "/app",
+    action: "Open dashboard",
+  },
+  {
+    eyebrow: "Creator flow",
+    title: "Choose the vesting type",
+    description:
+      "Start the create stream flow and select the schedule model that fits the distribution, such as linear vesting or cliff vesting.",
+    points: ["This defines how tokens unlock over time.", "The next screens keep the setup focused on one stream."],
+    href: "/create-vesting/type",
+    action: "Choose type",
+  },
+  {
+    eyebrow: "Creator flow",
+    title: "Configure vesting details",
+    description:
+      "Set token information, start date, end date, unlock cadence, and stream permissions before adding recipients.",
+    points: ["Configuration controls the on-chain schedule.", "Review token and timing values carefully before moving on."],
+    href: "/create-vesting/configuration",
+    action: "Configure",
+  },
+  {
+    eyebrow: "Creator flow",
+    title: "Add recipients and review",
+    description:
+      "Add recipient wallet addresses, assign token amounts, then review the complete stream before submitting the transaction.",
+    points: ["The review step is the final check before wallet approval.", "Created streams can be monitored from the vesting page."],
+    href: "/create-vesting/recipients",
+    action: "Add recipients",
+  },
+  {
+    eyebrow: "Creator flow",
+    title: "Manage or cancel streams",
+    description:
+      "Open the vesting page to inspect created streams. If a stream should no longer continue, use the cancel action from the creator-side view.",
+    points: ["Canceled streams stop recipient claims in the app.", "The vesting page stays focused on creator-owned streams."],
+    href: "/vesting",
+    action: "Manage vesting",
+  },
+  {
+    eyebrow: "Recipient flow",
+    title: "Claim vested tokens",
+    description:
+      "Recipients connect their wallet, open the claim page, and withdraw available tokens from active streams as the schedule unlocks.",
+    points: ["Only currently claimable amounts are actionable.", "Claiming requires wallet approval for the withdrawal transaction."],
+    href: "/claim",
+    action: "Open claims",
   },
 ];
 
@@ -720,6 +779,128 @@ function ConnectedWalletButton() {
   );
 }
 
+function TutorialHelper() {
+  const [open, setOpen] = useState(false);
+  const [stepIndex, setStepIndex] = useState(0);
+  const step = protocolTutorialSteps[stepIndex];
+  const isFirstStep = stepIndex === 0;
+  const isLastStep = stepIndex === protocolTutorialSteps.length - 1;
+
+  useEffect(() => {
+    if (!open) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+      if (event.key === "ArrowRight") setStepIndex((current) => Math.min(current + 1, protocolTutorialSteps.length - 1));
+      if (event.key === "ArrowLeft") setStepIndex((current) => Math.max(current - 1, 0));
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open]);
+
+  return (
+    <>
+      <button
+        aria-label="Open protocol tutorial"
+        className="flex size-10 items-center justify-center rounded-xl border border-[#fffeea]/15 bg-[#0b0d11] text-[#fffeea]/70 transition hover:border-[#fffeea]/30 hover:bg-[#13151a] hover:text-[#fffeea]"
+        onClick={() => setOpen(true)}
+        title="Protocol tutorial"
+        type="button"
+      >
+        <HelpCircle size={20} />
+      </button>
+      {open ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/64 px-4 py-6" role="presentation">
+          <div className="absolute inset-0" onClick={() => setOpen(false)} />
+          <section
+            aria-labelledby="protocol-tutorial-title"
+            aria-modal="true"
+            className="relative z-[1] flex max-h-[calc(100vh-48px)] w-full max-w-[560px] flex-col overflow-hidden rounded-[6px] border border-[#fffeea]/16 bg-[#0b0d11] text-[#fffeea] shadow-2xl shadow-black/60"
+            role="dialog"
+          >
+            <div className="flex items-center justify-between border-b border-[#fffeea]/10 px-5 py-4">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-[0.16em] text-[#f2d467]">Protocol tutorial</p>
+                <p className="mt-1 text-sm text-[#fffeea]/50">
+                  Step {stepIndex + 1} of {protocolTutorialSteps.length}
+                </p>
+              </div>
+              <button
+                aria-label="Close tutorial"
+                className="grid size-9 place-items-center rounded-lg text-[#fffeea]/60 transition hover:bg-[#13151a] hover:text-[#fffeea]"
+                onClick={() => setOpen(false)}
+                type="button"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+              <div className="flex gap-2">
+                {protocolTutorialSteps.map((item, index) => (
+                  <button
+                    aria-label={`Go to ${item.title}`}
+                    className={`h-1.5 flex-1 rounded-full transition ${index === stepIndex ? "bg-[#f2d467]" : "bg-[#fffeea]/12 hover:bg-[#fffeea]/24"}`}
+                    key={item.title}
+                    onClick={() => setStepIndex(index)}
+                    type="button"
+                  />
+                ))}
+              </div>
+              <div className="rounded-[4px] border border-[#fffeea]/12 bg-[#06070a] p-5">
+                <p className="text-sm font-medium text-[#f2d467]">{step.eyebrow}</p>
+                <h2 className="mt-2 text-2xl font-semibold leading-8 text-white" id="protocol-tutorial-title">
+                  {step.title}
+                </h2>
+                <p className="mt-3 text-sm leading-6 text-[#fffeea]/64">{step.description}</p>
+                <ul className="mt-5 flex flex-col gap-3">
+                  {step.points.map((point) => (
+                    <li className="flex gap-3 text-sm leading-5 text-[#fffeea]/70" key={point}>
+                      <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-[#f2d467]/14 text-[#f2d467]">
+                        <Check size={13} />
+                      </span>
+                      <span>{point}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+            <div className="flex flex-col gap-3 border-t border-[#fffeea]/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <Link
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-[4px] border border-[#fffeea]/18 bg-[#13151a] px-4 text-sm font-medium text-[#fffeea]/82 transition hover:border-[#fffeea]/35 hover:bg-[#191b22]"
+                href={step.href}
+                onClick={() => setOpen(false)}
+              >
+                <CirclePlay size={16} />
+                {step.action}
+              </Link>
+              <div className="flex gap-2">
+                <button
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-[4px] border border-[#fffeea]/18 bg-[#13151a] px-4 text-sm font-medium text-[#fffeea]/82 transition hover:border-[#fffeea]/35 hover:bg-[#191b22] disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={isFirstStep}
+                  onClick={() => setStepIndex((current) => Math.max(current - 1, 0))}
+                  type="button"
+                >
+                  <ChevronLeft size={16} />
+                  Back
+                </button>
+                <button
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-[4px] border border-[#fffeea] bg-[#fffeea] px-4 text-sm font-medium !text-[#06070a] transition hover:border-[#f2d467] hover:bg-[#f2d467] hover:!text-[#06070a]"
+                  onClick={() => (isLastStep ? setOpen(false) : setStepIndex((current) => current + 1))}
+                  type="button"
+                >
+                  {isLastStep ? "Done" : "Next"}
+                  {isLastStep ? null : <ChevronRight size={16} />}
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function SidebarItem({ item, collapsed = false }: { item: NavItem; collapsed?: boolean }) {
   const pathname = usePathname();
   const active =
@@ -795,6 +976,7 @@ function AppHeader() {
         <Search size={20} />
         <span>Search</span>
       </label>
+      <TutorialHelper />
       <button className="flex size-10 items-center justify-center rounded-xl border border-[#fffeea]/15 bg-[#0b0d11] text-[#fffeea]/70" type="button">
         <Bell size={20} />
       </button>
