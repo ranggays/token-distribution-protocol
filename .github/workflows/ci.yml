@@ -64,4 +64,4 @@ jobs:
           solana-keygen new --no-bip39-passphrase --silent -o "$HOME/.config/solana/id.json"
 
       - name: Run tests
-        run: yarn test
+        run: yarn test:skip-build
