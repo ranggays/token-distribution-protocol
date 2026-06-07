@@ -3,7 +3,7 @@ import { VeloraChainProvider } from "@/lib/velora-chain";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Velora - Token Distribution ",
+  title: "Velora - Token Distribution Protocol",
   description:
     "Velora helps teams plan predictable token releases with configurable schedules, locked allocations, and clear recipient claims.",
   icons: {
