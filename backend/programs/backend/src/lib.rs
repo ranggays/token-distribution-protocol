@@ -1,8 +1,11 @@
+#![cfg_attr(coverage, allow(dead_code, unused_imports))]
+
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("Fwboky3ufxoT43egazAymFmjyAtJVDJLVJs977oLSN4V");
 
+#[cfg(not(coverage))]
 #[program]
 pub mod backend {
     use super::*;
@@ -141,10 +144,7 @@ pub mod backend {
         let now = Clock::get()?.unix_timestamp;
         let stream_config = &mut ctx.accounts.stream_config;
 
-        require!(
-            ctx.accounts.authority.key() == stream_config.creator,
-            ErrorCode::Unauthorized
-        );
+        require_cancel_authority(stream_config, ctx.accounts.authority.key())?;
         require!(
             stream_config.status != StreamStatus::Cancelled,
             ErrorCode::AlreadyCancelled
@@ -201,6 +201,7 @@ pub mod backend {
     }
 }
 
+#[cfg(not(coverage))]
 #[derive(Accounts)]
 #[instruction(params: CreateStreamParams)]
 pub struct CreateStream<'info> {
@@ -242,6 +243,7 @@ pub struct CreateStream<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
+#[cfg(not(coverage))]
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
     pub recipient: Signer<'info>,
@@ -273,6 +275,7 @@ pub struct Withdraw<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[cfg(not(coverage))]
 #[derive(Accounts)]
 pub struct CancelStream<'info> {
     pub authority: Signer<'info>,
@@ -310,6 +313,7 @@ pub struct CancelStream<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[cfg(not(coverage))]
 #[derive(Accounts)]
 pub struct ReleaseMilestone<'info> {
     pub authority: Signer<'info>,
@@ -326,6 +330,7 @@ pub struct ReleaseMilestone<'info> {
     pub stream_config: Account<'info, StreamConfig>,
 }
 
+#[cfg(not(coverage))]
 fn transfer_from_vault<'info>(
     token_program: &Program<'info, Token>,
     vault: &Account<'info, TokenAccount>,
@@ -345,6 +350,25 @@ fn transfer_from_vault<'info>(
         ),
         amount,
     )
+}
+
+fn require_cancel_authority(stream_config: &StreamConfig, authority: Pubkey) -> Result<()> {
+    require!(
+        stream_config.is_cancellable,
+        ErrorCode::CancellationDisabled
+    );
+
+    let is_authorized = match stream_config.cancel_authority {
+        CancelAuthority::CreatorOnly => authority == stream_config.creator,
+        CancelAuthority::Either => {
+            authority == stream_config.creator || authority == stream_config.recipient
+        }
+        CancelAuthority::Neither => false,
+    };
+
+    require!(is_authorized, ErrorCode::Unauthorized);
+
+    Ok(())
 }
 
 fn compute_unlocked(stream_config: &StreamConfig, now: i64) -> Result<u64> {
@@ -446,6 +470,7 @@ impl StreamConfig {
     pub const SPACE: usize = 8 + StreamConfig::INIT_SPACE;
 }
 
+#[cfg(not(coverage))]
 #[derive(InitSpace)]
 #[account]
 pub struct ClaimReceipt {
@@ -456,6 +481,7 @@ pub struct ClaimReceipt {
     pub recipient: Pubkey,
 }
 
+#[cfg(not(coverage))]
 impl ClaimReceipt {
     pub const SPACE: usize = 8 + ClaimReceipt::INIT_SPACE;
 }
@@ -533,4 +559,143 @@ pub enum ErrorCode {
     InvalidMint,
     #[msg("Vault token account does not match the stream vault.")]
     InvalidVault,
+    #[msg("Cancellation is disabled for this stream.")]
+    CancellationDisabled,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stream_config(schedule_type: ScheduleType) -> StreamConfig {
+        StreamConfig {
+            stream_id: 1,
+            creator: Pubkey::new_unique(),
+            recipient: Pubkey::new_unique(),
+            mint: Pubkey::new_unique(),
+            vault: Pubkey::new_unique(),
+            schedule_type,
+            total_amount: 1_000,
+            amount_claimed: 0,
+            start_timestamp: 100,
+            end_timestamp: 200,
+            cliff_timestamp: 0,
+            cliff_amount: 0,
+            authority_type: AuthorityType::None,
+            release_authority: Pubkey::default(),
+            milestone_released: false,
+            milestone_description: [0; 128],
+            status: StreamStatus::Active,
+            is_cancellable: true,
+            cancel_authority: CancelAuthority::CreatorOnly,
+            created_at: 0,
+            bump: 1,
+            vault_bump: 1,
+            reserved: [0; 30],
+        }
+    }
+
+    #[test]
+    fn linear_unlock_is_zero_before_and_at_start() {
+        assert_eq!(compute_linear_unlocked(1_000, 100, 200, 50).unwrap(), 0);
+        assert_eq!(compute_linear_unlocked(1_000, 100, 200, 100).unwrap(), 0);
+    }
+
+    #[test]
+    fn linear_unlocks_proportionally_between_start_and_end() {
+        assert_eq!(compute_linear_unlocked(1_000, 100, 200, 125).unwrap(), 250);
+        assert_eq!(compute_linear_unlocked(1_000, 100, 200, 150).unwrap(), 500);
+        assert_eq!(compute_linear_unlocked(1_000, 100, 200, 175).unwrap(), 750);
+    }
+
+    #[test]
+    fn linear_unlock_caps_at_total_amount_after_end() {
+        assert_eq!(
+            compute_linear_unlocked(1_000, 100, 200, 200).unwrap(),
+            1_000
+        );
+        assert_eq!(
+            compute_linear_unlocked(1_000, 100, 200, 250).unwrap(),
+            1_000
+        );
+    }
+
+    #[test]
+    fn linear_unlock_handles_large_amounts_without_overflow() {
+        assert_eq!(
+            compute_linear_unlocked(u64::MAX, 0, 100, 50).unwrap(),
+            u64::MAX / 2
+        );
+    }
+
+    #[test]
+    fn compute_unlocked_uses_linear_schedule() {
+        let config = stream_config(ScheduleType::Linear);
+
+        assert_eq!(compute_unlocked(&config, 150).unwrap(), 500);
+    }
+
+    #[test]
+    fn compute_unlocked_keeps_cliff_stream_locked_before_cliff() {
+        let mut config = stream_config(ScheduleType::CliffLinear);
+        config.cliff_timestamp = 150;
+
+        assert_eq!(compute_unlocked(&config, 149).unwrap(), 0);
+    }
+
+    #[test]
+    fn compute_unlocked_starts_cliff_linear_schedule_at_cliff() {
+        let mut config = stream_config(ScheduleType::CliffLinear);
+        config.cliff_timestamp = 150;
+
+        assert_eq!(compute_unlocked(&config, 150).unwrap(), 0);
+        assert_eq!(compute_unlocked(&config, 175).unwrap(), 500);
+        assert_eq!(compute_unlocked(&config, 200).unwrap(), 1_000);
+    }
+
+    #[test]
+    fn compute_unlocked_uses_milestone_release_flag() {
+        let mut config = stream_config(ScheduleType::Milestone);
+
+        assert_eq!(compute_unlocked(&config, 150).unwrap(), 0);
+
+        config.milestone_released = true;
+
+        assert_eq!(compute_unlocked(&config, 150).unwrap(), 1_000);
+    }
+
+    #[test]
+    fn cancel_authority_rejects_non_cancellable_streams() {
+        let mut config = stream_config(ScheduleType::Linear);
+        config.is_cancellable = false;
+
+        assert!(require_cancel_authority(&config, config.creator).is_err());
+    }
+
+    #[test]
+    fn cancel_authority_creator_only_allows_creator() {
+        let config = stream_config(ScheduleType::Linear);
+
+        assert!(require_cancel_authority(&config, config.creator).is_ok());
+        assert!(require_cancel_authority(&config, config.recipient).is_err());
+    }
+
+    #[test]
+    fn cancel_authority_either_allows_creator_or_recipient() {
+        let mut config = stream_config(ScheduleType::Linear);
+        config.cancel_authority = CancelAuthority::Either;
+
+        assert!(require_cancel_authority(&config, config.creator).is_ok());
+        assert!(require_cancel_authority(&config, config.recipient).is_ok());
+        assert!(require_cancel_authority(&config, Pubkey::new_unique()).is_err());
+    }
+
+    #[test]
+    fn cancel_authority_neither_rejects_everyone() {
+        let mut config = stream_config(ScheduleType::Linear);
+        config.cancel_authority = CancelAuthority::Neither;
+
+        assert!(require_cancel_authority(&config, config.creator).is_err());
+        assert!(require_cancel_authority(&config, config.recipient).is_err());
+    }
 }

@@ -23,6 +23,8 @@ describe("backend", () => {
   const milestone = { milestone: {} };
   const authorityNone = { none: {} };
   const creatorOnly = { creatorOnly: {} };
+  const either = { either: {} };
+  const neither = { neither: {} };
 
   async function airdrop(pubkey: anchor.web3.PublicKey) {
     const signature = await connection.requestAirdrop(
@@ -133,6 +135,7 @@ describe("backend", () => {
     scheduleType = linear,
     releaseAuthority = null,
     isCancellable = false,
+    cancelAuthority = creatorOnly,
   }: {
     creator: anchor.web3.Keypair;
     recipient: anchor.web3.Keypair;
@@ -147,6 +150,7 @@ describe("backend", () => {
     scheduleType?: Record<string, unknown>;
     releaseAuthority?: anchor.web3.PublicKey | null;
     isCancellable?: boolean;
+    cancelAuthority?: Record<string, unknown>;
   }) {
     const streamConfig = deriveStream(
       creator.publicKey,
@@ -168,8 +172,8 @@ describe("backend", () => {
         releaseAuthority,
         milestoneDescription: Array(128).fill(0),
         isCancellable,
-        cancelAuthority: creatorOnly,
-      })
+        cancelAuthority,
+      } as any)
       .accounts({
         creator: creator.publicKey,
         recipient: recipient.publicKey,
@@ -776,5 +780,199 @@ describe("backend", () => {
     } catch (error) {
       expect((error as Error).toString()).to.contain("Unauthorized");
     }
+  });
+
+  it("rejects zero amount streams", async () => {
+    const fixture = await createTokenFixture();
+    const currentTime = await nowSeconds();
+
+    try {
+      await createStream({
+        ...fixture,
+        streamId: new anchor.BN(18),
+        totalAmount: 0,
+        startTimestamp: currentTime,
+        endTimestamp: currentTime + 1_000,
+      });
+      expect.fail("create_stream should reject zero amount");
+    } catch (error) {
+      expect((error as Error).toString()).to.contain("ZeroAmount");
+    }
+  });
+
+  it("rejects withdrawal at the cliff boundary before linear time has elapsed", async () => {
+    const fixture = await createTokenFixture();
+    const currentTime = await nowSeconds();
+    const { streamConfig, vault } = await createStream({
+      ...fixture,
+      streamId: new anchor.BN(19),
+      totalAmount: 1_000,
+      startTimestamp: currentTime - 100,
+      cliffTimestamp: currentTime,
+      endTimestamp: currentTime + 100,
+      scheduleType: cliffLinear,
+    });
+
+    try {
+      await withdraw({
+        recipient: fixture.recipient,
+        streamConfig,
+        vault,
+        recipientTokenAccount: fixture.recipientTokenAccount,
+      });
+      expect.fail("withdraw should reject at the cliff boundary");
+    } catch (error) {
+      expect((error as Error).toString()).to.contain("NothingToWithdraw");
+    }
+  });
+
+  it("rejects cancel at the end boundary because the stream is fully vested", async () => {
+    const fixture = await createTokenFixture();
+    const currentTime = await nowSeconds();
+    const { streamConfig, vault } = await createStream({
+      ...fixture,
+      streamId: new anchor.BN(20),
+      totalAmount: 1_000,
+      startTimestamp: currentTime - 1_000,
+      endTimestamp: currentTime,
+      isCancellable: true,
+    });
+
+    try {
+      await cancelStream({
+        authority: fixture.creator,
+        streamConfig,
+        vault,
+        recipientTokenAccount: fixture.recipientTokenAccount,
+        creatorTokenAccount: fixture.creatorTokenAccount,
+      });
+      expect.fail("cancel should reject at the fully vested end boundary");
+    } catch (error) {
+      expect((error as Error).toString()).to.contain("FullyVested");
+    }
+  });
+
+  it("rejects a second withdrawal after the stream is completed", async () => {
+    const fixture = await createTokenFixture();
+    const currentTime = await nowSeconds();
+    const { streamConfig, vault } = await createStream({
+      ...fixture,
+      streamId: new anchor.BN(21),
+      totalAmount: 1_000,
+      startTimestamp: currentTime - 1_000,
+      endTimestamp: currentTime - 1,
+    });
+
+    await withdraw({
+      recipient: fixture.recipient,
+      streamConfig,
+      vault,
+      recipientTokenAccount: fixture.recipientTokenAccount,
+    });
+
+    try {
+      await withdraw({
+        recipient: fixture.recipient,
+        streamConfig,
+        vault,
+        recipientTokenAccount: fixture.recipientTokenAccount,
+      });
+      expect.fail("second withdraw should reject completed streams");
+    } catch (error) {
+      expect((error as Error).toString()).to.contain("StreamNotActive");
+    }
+  });
+
+  it("rejects cancellation when the stream is not cancellable", async () => {
+    const fixture = await createTokenFixture();
+    const currentTime = await nowSeconds();
+    const { streamConfig, vault } = await createStream({
+      ...fixture,
+      streamId: new anchor.BN(22),
+      totalAmount: 1_000,
+      startTimestamp: currentTime,
+      endTimestamp: currentTime + 1_000,
+      isCancellable: false,
+    });
+
+    try {
+      await cancelStream({
+        authority: fixture.creator,
+        streamConfig,
+        vault,
+        recipientTokenAccount: fixture.recipientTokenAccount,
+        creatorTokenAccount: fixture.creatorTokenAccount,
+      });
+      expect.fail("cancel should reject non-cancellable streams");
+    } catch (error) {
+      expect((error as Error).toString()).to.contain("CancellationDisabled");
+    }
+  });
+
+  it("rejects cancellation when cancel authority is neither", async () => {
+    const fixture = await createTokenFixture();
+    const currentTime = await nowSeconds();
+    const { streamConfig, vault } = await createStream({
+      ...fixture,
+      streamId: new anchor.BN(23),
+      totalAmount: 1_000,
+      startTimestamp: currentTime,
+      endTimestamp: currentTime + 1_000,
+      isCancellable: true,
+      cancelAuthority: neither,
+    });
+
+    try {
+      await cancelStream({
+        authority: fixture.creator,
+        streamConfig,
+        vault,
+        recipientTokenAccount: fixture.recipientTokenAccount,
+        creatorTokenAccount: fixture.creatorTokenAccount,
+      });
+      expect.fail("cancel should reject when authority is neither");
+    } catch (error) {
+      expect((error as Error).toString()).to.contain("Unauthorized");
+    }
+  });
+
+  it("allows the recipient to cancel when cancel authority is either", async () => {
+    const fixture = await createTokenFixture();
+    const currentTime = await nowSeconds();
+    const { streamConfig, vault } = await createStream({
+      ...fixture,
+      streamId: new anchor.BN(24),
+      totalAmount: 1_000,
+      startTimestamp: currentTime + 60,
+      endTimestamp: currentTime + 1_060,
+      isCancellable: true,
+      cancelAuthority: either,
+    });
+
+    await cancelStream({
+      authority: fixture.recipient,
+      streamConfig,
+      vault,
+      recipientTokenAccount: fixture.recipientTokenAccount,
+      creatorTokenAccount: fixture.creatorTokenAccount,
+    });
+
+    const streamAccount = await program.account.streamConfig.fetch(
+      streamConfig
+    );
+    const creatorAccount = await getAccount(
+      connection,
+      fixture.creatorTokenAccount
+    );
+    const recipientAccount = await getAccount(
+      connection,
+      fixture.recipientTokenAccount
+    );
+    const vaultAccount = await getAccount(connection, vault);
+
+    expect(streamAccount.status).to.deep.equal({ cancelled: {} });
+    expect(Number(creatorAccount.amount)).to.equal(1_000);
+    expect(Number(recipientAccount.amount)).to.equal(0);
+    expect(Number(vaultAccount.amount)).to.equal(0);
   });
 });
