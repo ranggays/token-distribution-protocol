@@ -64,12 +64,12 @@ void main() {
     sin((uv.y * 52.0) + (uTime * 1.4) + (uv.x * 8.0));
 
   vec2 displacement =
-    (-velocity * 0.044 * reveal) +
-    (normalize(fromMouse + vec2(0.0001)) * ripple * (0.009 + speed * 0.016) * reveal) +
-    (vec2(wake, -wake) * 0.004 * reveal);
+    (-velocity * 0.026 * reveal) +
+    (normalize(fromMouse + vec2(0.0001)) * ripple * (0.005 + speed * 0.009) * reveal) +
+    (vec2(wake, -wake) * 0.0025 * reveal);
 
   vec2 displacedUv = imageUv + displacement;
-  vec2 rgbShift = direction * (0.004 + speed * 0.015) * reveal;
+  vec2 rgbShift = direction * (0.0025 + speed * 0.008) * reveal;
 
   vec3 base = texture2D(uTexture, imageUv).rgb;
   vec3 displaced;
@@ -165,10 +165,10 @@ export function HeroKineticCanvas() {
     const render = (time: number) => {
       if (disposed) return;
 
-      pointer.x += (pointer.targetX - pointer.x) * 0.08;
-      pointer.y += (pointer.targetY - pointer.y) * 0.08;
-      pointer.velocityX *= 0.86;
-      pointer.velocityY *= 0.86;
+      pointer.x += (pointer.targetX - pointer.x) * 0.18;
+      pointer.y += (pointer.targetY - pointer.y) * 0.18;
+      pointer.velocityX *= 0.78;
+      pointer.velocityY *= 0.78;
 
       uniforms.uMouse.value.set(pointer.x, pointer.y);
       uniforms.uVelocity.value.set(pointer.velocityX, pointer.velocityY);

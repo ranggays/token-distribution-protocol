@@ -353,8 +353,8 @@ export function VeloraMotion() {
       if (!isMobile) {
         if (kinetic) {
           gsap.set(kinetic, {
-            x: -moveX * 0.012,
-            y: scrollY * 0.6 - moveY * 0.012,
+            x: 0,
+            y: scrollY * 0.6,
             opacity: Math.max(0.01, heroSurfaceFade),
             scale: 1.12 + Math.sin(performance.now() * 0.0012) * 0.012,
             "--wave-x": `${50 + moveX * 0.012}%`,
@@ -372,22 +372,22 @@ export function VeloraMotion() {
         }
         if (headerTitle) {
           gsap.set(headerTitle, {
-            x: -moveX * 0.03,
-            y: -moveY * 0.03 + scrollY * 0.08,
+            x: 0,
+            y: scrollY * 0.08,
             opacity: heroFade,
           });
         }
         if (headerLine) {
           gsap.set(headerLine, {
-            x: -moveX * 0.04,
-            y: -moveY * 0.04 + scrollY * 0.13,
+            x: 0,
+            y: scrollY * 0.13,
             opacity: 0.3 * heroFade,
           });
         }
         if (fastContainer) {
           gsap.set(fastContainer, {
-            x: -moveX * 0.06,
-            y: -moveY * 0.06 - scrollY * 0.5,
+            x: 0,
+            y: -scrollY * 0.5,
           });
         }
         if (fastButtons) {

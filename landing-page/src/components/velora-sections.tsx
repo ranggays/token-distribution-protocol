@@ -25,13 +25,13 @@ export function HeroSection() {
       <div className="hero-content">
         <div className="hero-title-row">
           <div className="hero-title header-title-effects">
-            <h1>Token Distribution Protocol - Programmable Token Distribution for Predictable Releases</h1>
+            <h1>Token Distribution Protocol - Plan Token Releases That Unlock on Schedule</h1>
             <h2>
-              Programmable token
+              Plan token
               <br />
-              distribution for
+              releases that
               <br />
-              predictable releases.
+              unlock on schedule.
             </h2>
           </div>
           <p className="scroll-downer">scroll down</p>
@@ -40,7 +40,7 @@ export function HeroSection() {
         <div className="hero-fast-links fast-container">
           <div className="fast-buttons">
           {heroLinks.map((link) => (
-            <Link className="magnet-effect" href={link.href} key={link.label}>
+            <Link href={link.href} key={link.label}>
               {link.label}
             </Link>
           ))}
@@ -56,15 +56,13 @@ export function IntroSection() {
     <section className="intro-section intro">
       <span className="section-anchor" id="use-cases" aria-hidden="true" />
       <div className="motion-reveal" data-duration="1.5">
-        <IntroRevealHeading text="Built for token releases that unfold" />
-        <IntroRevealHeading text="across teams, grants, and milestones" />
-        <IntroRevealHeading text="without manual tracking." />
+        <IntroRevealHeading text="Create a token release plan." />
+        <IntroRevealHeading text="Lock the tokens in the vault." />
+        <IntroRevealHeading text="Let recipients claim over time." />
         <p>
-          TDP helps projects plan token releases for contributors, teams, DAO
-          grants, community rewards, and milestone-based payouts. <br />
-          Creators define the schedule up front, tokens stay locked until the
-          rules are met, <br />
-          And recipients can claim what has become available.
+          TDP helps projects distribute tokens without manual tracking. <br />
+          Creators choose the amount, recipient, and unlock schedule. <br />
+          The program holds the tokens and releases them when they become claimable.
         </p>
       </div>
       <ActionRow actions={introActions} className="intro-actions intro-content-action motion-reveal" />
@@ -73,11 +71,20 @@ export function IntroSection() {
 }
 
 function IntroRevealHeading({ text }: { text: string }) {
+  const words = text.split(" ");
+
   return (
     <h2 className="intro-reveal-line" aria-label={text}>
-      {Array.from(text).map((char, index) => (
-        <span className="intro-reveal-char" aria-hidden="true" key={`${char}-${index}`}>
-          {char === " " ? "\u00A0" : char}
+      {words.map((word, wordIndex) => (
+        <span aria-hidden="true" key={`${word}-${wordIndex}`}>
+          <span className="intro-reveal-word">
+            {Array.from(word).map((char, charIndex) => (
+              <span className="intro-reveal-char" key={`${char}-${wordIndex}-${charIndex}`}>
+                {char}
+              </span>
+            ))}
+          </span>
+          {wordIndex < words.length - 1 ? " " : null}
         </span>
       ))}
     </h2>
@@ -128,7 +135,7 @@ export function CasesSection() {
             data-delay={0.05 + index * 0.05}
             key={item.name}
           >
-            <Link className="schedule-text-link magnet-effect" href={item.href}>
+            <Link className="schedule-text-link" href={item.href}>
               {item.name}
             </Link>
             <div className="company-text">
@@ -166,29 +173,25 @@ export function VisionSection() {
             <h2>for token releases.</h2>
             </div>
             <p>
-              TDP makes token distribution easier to reason about: release
-              rules are defined before tokens move, locked amounts stay
-              separated from manual handling, and each claim follows the
-              schedule chosen by the creator.
+              TDP keeps every release plan clear before tokens move. <br />
+              The schedule is set by the creator, the tokens stay locked in the
+              vault, and recipients can only claim the amount that has unlocked.
             </p>
           </div>
           <div className="vision-action motion-reveal" data-duration="2" data-delay="0.16">
-            <p>Have a distribution flow in mind?</p>
+            <p>Review the current protocol verification.</p>
             <div className="vision-action-row">
               <div className="velora-action">
                 <span className="velora-rule" />
-                <span
-                  aria-disabled="true"
-                  className="velora-action-link velora-action-link-disabled"
-                >
-                  <span>Shape the conversation (soon)</span>
+                <Link className="velora-action-link magnet-effect" href="/security">
+                  <span>Open security evidence</span>
                   <Image
                     src="/images/velora/icons/chevron-right.svg"
                     alt=""
                     width={24}
                     height={24}
                   />
-                </span>
+                </Link>
               </div>
             </div>
           </div>
@@ -214,10 +217,10 @@ export function ContactSection() {
       <div className="contact-content contact-content-container">
         <div className="contact-title motion-reveal" data-duration="2" data-delay="0.1">
           <h2>
-            <span>Plan</span> <strong>releases</strong> <span>clearly</span>
+            <span>Create</span> <strong>token</strong> <span>schedules</span>
           </h2>
           <h2>
-            <span>Make</span> <strong>claims</strong> <span>predictable</span>
+            <span>Let</span> <strong>recipients</strong> <span>claim</span>
           </h2>
         </div>
         <VeloraWaitlist />
