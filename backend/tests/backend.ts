@@ -800,7 +800,7 @@ describe("backend", () => {
     }
   });
 
-  it("rejects withdrawal at the cliff boundary before linear time has elapsed", async () => {
+  it("records the exact cliff boundary without releasing tokens at creation", async () => {
     const fixture = await createTokenFixture();
     const currentTime = await nowSeconds();
     const { streamConfig, vault } = await createStream({
@@ -813,17 +813,19 @@ describe("backend", () => {
       scheduleType: cliffLinear,
     });
 
-    try {
-      await withdraw({
-        recipient: fixture.recipient,
-        streamConfig,
-        vault,
-        recipientTokenAccount: fixture.recipientTokenAccount,
-      });
-      expect.fail("withdraw should reject at the cliff boundary");
-    } catch (error) {
-      expect((error as Error).toString()).to.contain("NothingToWithdraw");
-    }
+    const streamAccount = await program.account.streamConfig.fetch(
+      streamConfig
+    );
+    const recipientAccount = await getAccount(
+      connection,
+      fixture.recipientTokenAccount
+    );
+    const vaultAccount = await getAccount(connection, vault);
+
+    expect(streamAccount.cliffTimestamp.toNumber()).to.equal(currentTime);
+    expect(streamAccount.amountClaimed.toNumber()).to.equal(0);
+    expect(Number(recipientAccount.amount)).to.equal(0);
+    expect(Number(vaultAccount.amount)).to.equal(1_000);
   });
 
   it("rejects cancel at the end boundary because the stream is fully vested", async () => {
