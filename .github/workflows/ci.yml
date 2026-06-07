@@ -28,18 +28,49 @@ jobs:
           toolchain: 1.91.0
           components: rustfmt, clippy
 
+      - name: Cache Rust dependencies and build output
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          cache-targets: true
+          cache-on-failure: true
+
+      - name: Cache Solana CLI
+        id: cache-solana
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/solana/install
+          key: solana-cli-stable-${{ runner.os }}
+
       - name: Install Solana CLI
         run: |
-          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
           export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          if ! command -v solana >/dev/null 2>&1; then
+            sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          fi
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
           solana --version
           cargo build-sbf --version
 
+      - name: Cache Anchor CLI
+        id: cache-anchor
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.avm
+            ~/.cargo/bin/avm
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: anchor-cli-0.32.1-${{ runner.os }}
+
       - name: Install Anchor CLI
         run: |
-          cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
-          avm install 0.32.1
+          if ! command -v avm >/dev/null 2>&1; then
+            cargo install --git https://github.com/coral-xyz/anchor avm --locked --force
+          fi
+          if ! test -x "$HOME/.avm/bin/anchor-0.32.1"; then
+            avm install 0.32.1
+          fi
           avm use 0.32.1
           echo "$HOME/.avm/bin" >> "$GITHUB_PATH"
 
@@ -64,4 +95,4 @@ jobs:
           solana-keygen new --no-bip39-passphrase --silent -o "$HOME/.config/solana/id.json"
 
       - name: Run tests
-        run: yarn test
+        run: yarn test:skip-build
