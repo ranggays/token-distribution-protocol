@@ -803,7 +803,7 @@ function TutorialHelper() {
     <>
       <button
         aria-label="Open protocol tutorial"
-        className="flex size-10 items-center justify-center rounded-xl border border-[#fffeea]/15 bg-[#0b0d11] text-[#fffeea]/70 transition hover:border-[#fffeea]/30 hover:bg-[#13151a] hover:text-[#fffeea]"
+        className="sf-tutorial-button flex size-10 items-center justify-center rounded-xl border border-[#fffeea]/15 bg-[#0b0d11] text-[#fffeea]/70 transition hover:border-[#fffeea]/30 hover:bg-[#13151a] hover:text-[#fffeea]"
         onClick={() => setOpen(true)}
         title="Protocol tutorial"
         type="button"
@@ -969,19 +969,103 @@ function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => 
   );
 }
 
-function AppHeader() {
+function MobileNavDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const pathname = usePathname();
+
+  useEffect(() => {
+    if (!open) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [onClose, open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[80] lg:hidden">
+      <button
+        aria-label="Close navigation"
+        className="absolute inset-0 bg-black/62"
+        onClick={onClose}
+        type="button"
+      />
+      <aside className="absolute right-0 top-0 flex h-full w-[min(86vw,340px)] flex-col border-l border-[#fffeea]/12 bg-[#06070a] p-5 text-[#fffeea] shadow-2xl shadow-black/60">
+        <div className="flex items-center justify-between">
+          <Link className="flex items-center gap-3" href="/app" onClick={onClose}>
+            <VeloraLogo />
+            <span className="text-base font-semibold">Velora</span>
+          </Link>
+          <button
+            aria-label="Close navigation"
+            className="grid size-10 place-items-center rounded-xl border border-[#fffeea]/15 bg-[#0b0d11] text-[#fffeea]/70"
+            onClick={onClose}
+            type="button"
+          >
+            <X size={20} />
+          </button>
+        </div>
+        <nav className="mt-8 flex flex-col gap-2">
+          {mainNav.map((item) => {
+            const active =
+              item.match === "/app"
+                ? pathname === "/app"
+                : item.match
+                  ? pathname.startsWith(item.match)
+                  : pathname === item.href;
+            const Icon = item.icon;
+
+            return (
+              <Link
+                aria-current={active ? "page" : undefined}
+                className={`flex items-center gap-3 rounded-lg px-3 py-3 text-sm font-medium transition ${
+                  active ? "bg-[#13151a] text-[#fffeea]" : "text-[#fffeea]/62 hover:bg-[#13151a] hover:text-[#fffeea]"
+                }`}
+                href={item.href}
+                key={item.label}
+                onClick={onClose}
+              >
+                <Icon className={active ? "text-[#f2d467]" : "text-[#fffeea]/55"} size={20} />
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
+      </aside>
+    </div>
+  );
+}
+
+function AppHeader({ onOpenMobileNav }: { onOpenMobileNav: () => void }) {
   return (
     <header className="sf-header flex h-[72px] items-center justify-end gap-2.5 border-b border-[#fffeea]/12 bg-[#06070a] md:px-10 lg:col-start-2">
-      <label className="sf-search mr-auto hidden h-10 w-full max-w-[312px] items-center gap-2 rounded-md border border-[#fffeea]/15 bg-[#0b0d11] text-sm text-[#fffeea]/45 shadow-sm sm:flex">
+      <Link className="mr-auto flex items-center gap-2 lg:hidden" href="/app">
+        <VeloraLogo />
+        <span className="text-sm font-semibold text-[#fffeea]">Velora</span>
+      </Link>
+      <label className="sf-search mr-auto hidden h-10 w-full max-w-[312px] items-center gap-2 rounded-md border border-[#fffeea]/15 bg-[#0b0d11] text-sm text-[#fffeea]/45 shadow-sm lg:flex">
         <Search size={20} />
         <span>Search</span>
       </label>
       <TutorialHelper />
-      <button className="flex size-10 items-center justify-center rounded-xl border border-[#fffeea]/15 bg-[#0b0d11] text-[#fffeea]/70" type="button">
+      <button className="sf-notification-button flex size-10 items-center justify-center rounded-xl border border-[#fffeea]/15 bg-[#0b0d11] text-[#fffeea]/70" type="button">
         <Bell size={20} />
       </button>
       <ConnectedWalletButton />
-      <button className="flex size-10 items-center justify-center rounded-xl text-[#fffeea]/70 lg:hidden" type="button">
+      <button
+        aria-label="Open navigation"
+        className="flex size-10 items-center justify-center rounded-xl border border-[#fffeea]/15 bg-[#0b0d11] text-[#fffeea]/70 lg:hidden"
+        onClick={onOpenMobileNav}
+        type="button"
+      >
         <Menu size={24} />
       </button>
     </header>
@@ -989,6 +1073,7 @@ function AppHeader() {
 }
 
 export function AppShell({ children, maxWidth = "max-w-[1120px]" }: { children: React.ReactNode; maxWidth?: string }) {
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const sidebarCollapsed = useSyncExternalStore(
     subscribeToSidebarCollapsedStore,
     readSidebarCollapsedSnapshot,
@@ -1001,11 +1086,12 @@ export function AppShell({ children, maxWidth = "max-w-[1120px]" }: { children: 
         <div className="relative row-start-1 -row-end-1 hidden lg:block">
           <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsedSnapshot(!sidebarCollapsed)} />
         </div>
-        <AppHeader />
+        <AppHeader onOpenMobileNav={() => setMobileNavOpen(true)} />
         <div className="min-h-0 overflow-y-auto lg:col-start-2">
           <div className={`sf-content mx-auto flex w-full ${maxWidth} flex-col px-5 py-8 md:px-8`}>{children}</div>
         </div>
       </div>
+      <MobileNavDrawer open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
     </main>
   );
 }
@@ -1024,7 +1110,7 @@ export function PrimaryButton({
   type?: "button" | "submit";
 }) {
   const className =
-    "inline-flex h-10 items-center justify-center gap-2 rounded-[4px] border border-[#fffeea] bg-[#fffeea] px-4 text-sm font-medium !text-[#06070a] shadow-sm transition hover:border-[#f2d467] hover:bg-[#f2d467] hover:!text-[#06070a] disabled:cursor-not-allowed disabled:opacity-45";
+    "inline-flex min-h-10 items-center justify-center gap-2 rounded-[4px] border border-[#fffeea] bg-[#fffeea] px-4 py-2 text-sm font-medium !text-[#06070a] shadow-sm transition hover:border-[#f2d467] hover:bg-[#f2d467] hover:!text-[#06070a] disabled:cursor-not-allowed disabled:opacity-45";
   if (href) {
     return (
       <Link className={className} href={href}>
@@ -1051,7 +1137,7 @@ export function SecondaryButton({
   disabled?: boolean;
 }) {
   const className =
-    "inline-flex h-10 items-center justify-center gap-2 rounded-[4px] border border-[#fffeea]/18 bg-[#13151a] px-4 text-sm font-medium text-[#fffeea]/82 transition hover:border-[#fffeea]/35 hover:bg-[#191b22] disabled:cursor-not-allowed disabled:opacity-45";
+    "inline-flex min-h-10 items-center justify-center gap-2 rounded-[4px] border border-[#fffeea]/18 bg-[#13151a] px-4 py-2 text-sm font-medium text-[#fffeea]/82 transition hover:border-[#fffeea]/35 hover:bg-[#191b22] disabled:cursor-not-allowed disabled:opacity-45";
   if (href) {
     return (
       <Link className={className} href={href}>
@@ -1638,10 +1724,10 @@ export function VestingPage() {
             Create new
           </PrimaryButton>
         </div>
-        <div className="flex gap-8 border-b border-[#fffeea]/14 text-sm">
+        <div className="flex gap-5 overflow-x-auto border-b border-[#fffeea]/14 text-sm md:gap-8">
           {["All", "Ongoing", "Scheduled", "Completed", "Canceled"].map((tab) => (
             <button
-              className={`pb-4 ${tab === activeTab ? "border-b-2 border-[#f2d467] text-[#fffeea]" : "text-[#fffeea]/55"}`}
+              className={`shrink-0 pb-4 ${tab === activeTab ? "border-b-2 border-[#f2d467] text-[#fffeea]" : "text-[#fffeea]/55"}`}
               key={tab}
               onClick={() => setActiveTab(tab)}
               type="button"
@@ -1650,8 +1736,8 @@ export function VestingPage() {
             </button>
           ))}
         </div>
-        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex gap-3">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <SecondaryButton>
               <ListFilter size={18} />
               Sorted by <span className="font-semibold text-white">default</span>
@@ -1661,14 +1747,16 @@ export function VestingPage() {
               Filters
             </SecondaryButton>
           </div>
-          <SecondaryButton onClick={() => void refresh()}>
-            <Search size={18} />
-            Refresh
-          </SecondaryButton>
-          <label className="flex h-11 w-full items-center gap-3 rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] px-4 text-[#fffeea]/45 md:max-w-[320px]">
-            <Search size={20} />
-            <span>Search</span>
-          </label>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <SecondaryButton onClick={() => void refresh()}>
+              <Search size={18} />
+              Refresh
+            </SecondaryButton>
+            <label className="flex h-11 w-full items-center gap-3 rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] px-4 text-[#fffeea]/45 sm:max-w-[320px]">
+              <Search size={20} />
+              <span>Search</span>
+            </label>
+          </div>
         </div>
         {error ? <FieldCard className="p-4 text-sm text-red-300">{error}</FieldCard> : null}
         {!walletPublicKey ? (
@@ -1731,8 +1819,82 @@ function VestingTable({ streams }: { streams: StreamView[] }) {
   const [openMenuStream, setOpenMenuStream] = useState<string | null>(null);
   const columns = ["Amount", "Contract", "Type", "Transaction", "Recipient", "Status", "Start date"];
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[960px] text-left text-sm">
+    <>
+      <div className="grid gap-4 md:hidden">
+        {streams.map((stream) => {
+          const streamAddress = stream.publicKey.toBase58();
+          const recipientAddress = stream.recipient.toBase58();
+
+          return (
+            <FieldCard className="p-4" key={streamAddress}>
+              <div className="flex items-start justify-between gap-3">
+                <Link className="flex min-w-0 items-start gap-3" href={`/contract/solana/devnet/${streamAddress}`}>
+                  <TokenIcon />
+                  <span className="min-w-0">
+                    <span className="block truncate text-base font-semibold text-white">{streamTitle(stream, metadata)}</span>
+                    <span className="mt-1 block text-xs text-[#fffeea]/50">
+                      {streamAddress.slice(0, 5)}...{streamAddress.slice(-5)}
+                    </span>
+                  </span>
+                </Link>
+                <div className="relative shrink-0">
+                  <button
+                    aria-expanded={openMenuStream === streamAddress}
+                    aria-label="Open contract actions"
+                    className="grid size-9 place-items-center rounded-[4px] text-[#fffeea]/62 transition hover:bg-[#13151a] hover:text-[#fffeea]"
+                    onClick={() => setOpenMenuStream((current) => (current === streamAddress ? null : streamAddress))}
+                    type="button"
+                  >
+                    <MoreHorizontal size={20} />
+                  </button>
+                  {openMenuStream === streamAddress ? (
+                    <div className="absolute right-0 top-11 z-50 w-48 overflow-hidden rounded-[4px] border border-[#fffeea]/16 bg-[#13151a] py-1 text-sm text-[#fffeea]/82 shadow-2xl shadow-black/50">
+                      <Link className="block px-4 py-2.5 hover:bg-[#191b22]" href={`/contract/solana/devnet/${streamAddress}`}>
+                        View details
+                      </Link>
+                      <button className="block w-full px-4 py-2.5 text-left hover:bg-[#191b22]" type="button">
+                        Copy contract address
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <span className="rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">{streamStatusLabel(stream)}</span>
+                <span className="rounded-[4px] border border-[#fffeea]/12 px-3 py-1 text-xs text-[#fffeea]/55">{scheduleLabel(stream.scheduleType)}</span>
+                <span className="text-xs text-[#fffeea]/45">{timeRemainingLabel(stream)}</span>
+              </div>
+
+              <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="text-xs text-[#fffeea]/42">Amount</div>
+                  <div className="mt-1 font-semibold text-white">{formatTokenAmount(stream.totalAmount)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-[#fffeea]/42">Unlocked</div>
+                  <div className="mt-1 font-semibold text-white">{formatTokenAmount(stream.unlockedAmount)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-[#fffeea]/42">Claimed</div>
+                  <div className="mt-1 font-semibold text-white">{formatTokenAmount(stream.amountClaimed)}</div>
+                </div>
+                <div>
+                  <div className="text-xs text-[#fffeea]/42">Start date</div>
+                  <div className="mt-1 font-semibold text-white">{formatDate(stream.startTimestamp)}</div>
+                </div>
+              </div>
+
+              <div className="mt-4 border-t border-[#fffeea]/10 pt-4 text-xs text-[#fffeea]/50">
+                Recipient {recipientAddress.slice(0, 5)}...{recipientAddress.slice(-5)}
+              </div>
+            </FieldCard>
+          );
+        })}
+      </div>
+
+      <div className="hidden overflow-x-auto md:block">
+        <table className="w-full min-w-[960px] text-left text-sm">
         <thead className="text-[#fffeea]/50">
           <tr>
             {columns.map((column) => (
@@ -1800,7 +1962,8 @@ function VestingTable({ streams }: { streams: StreamView[] }) {
           ))}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -1838,7 +2001,7 @@ export function ClaimPage() {
         </div>
 
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-          <div className="flex gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <SecondaryButton>
               <ListFilter size={18} />
               Sorted by <span className="font-semibold text-white">default</span>
@@ -1910,8 +2073,20 @@ function ClaimTable({
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[960px] text-left text-sm">
+    <>
+      <div className="grid gap-4 md:hidden">
+        {streams.map((stream) => (
+          <ClaimMobileCard
+            busyStream={busyStream}
+            key={stream.publicKey.toBase58()}
+            onWithdraw={onWithdraw}
+            stream={stream}
+          />
+        ))}
+      </div>
+
+      <div className="hidden overflow-x-auto md:block">
+        <table className="w-full min-w-[960px] text-left text-sm">
         <thead className="text-[#fffeea]/50">
           <tr>
             <th className="px-3 py-2 font-medium">
@@ -1941,7 +2116,70 @@ function ClaimTable({
           ))}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
+  );
+}
+
+function ClaimMobileCard({
+  stream,
+  onWithdraw,
+  busyStream,
+}: {
+  stream: StreamView;
+  onWithdraw: (stream: StreamView) => Promise<void>;
+  busyStream: string | null;
+}) {
+  const isBusy = busyStream === stream.publicKey.toBase58();
+  const canClaim = stream.status === "Active" && stream.claimableAmount > BigInt(0);
+  const claimLabel = stream.status !== "Active" ? streamStatusLabel(stream) : isBusy ? "Claiming..." : "Claim";
+  const recipientAddress = stream.recipient.toBase58();
+
+  return (
+    <FieldCard className="p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <TokenIcon />
+          <div className="min-w-0">
+            <div className="text-xs text-[#fffeea]/45">Claimable amount</div>
+            <div className="mt-1 text-lg font-semibold text-white">{formatTokenAmount(stream.claimableAmount)}</div>
+            <div className="mt-1 text-xs leading-5 text-[#fffeea]/50">
+              of {formatTokenAmount(stream.totalAmount)} total
+            </div>
+          </div>
+        </div>
+        <span className="shrink-0 rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">{streamStatusLabel(stream)}</span>
+      </div>
+
+      <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
+        <div>
+          <div className="text-xs text-[#fffeea]/42">Type</div>
+          <div className="mt-1 font-semibold text-white">{scheduleLabel(stream.scheduleType)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-[#fffeea]/42">Unlocked</div>
+          <div className="mt-1 font-semibold text-white">{formatTokenAmount(stream.unlockedAmount)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-[#fffeea]/42">Start date</div>
+          <div className="mt-1 font-semibold text-white">{formatDate(stream.startTimestamp)}</div>
+        </div>
+        <div>
+          <div className="text-xs text-[#fffeea]/42">Time</div>
+          <div className="mt-1 font-semibold text-white">{timeRemainingLabel(stream)}</div>
+        </div>
+      </div>
+
+      <div className="mt-4 border-t border-[#fffeea]/10 pt-4 text-xs text-[#fffeea]/50">
+        Recipient {recipientAddress.slice(0, 5)}...{recipientAddress.slice(-5)}
+      </div>
+
+      <div className="mt-4">
+        <PrimaryButton disabled={!canClaim || isBusy} onClick={() => void onWithdraw(stream)}>
+          {claimLabel}
+        </PrimaryButton>
+      </div>
+    </FieldCard>
   );
 }
 
@@ -2002,23 +2240,23 @@ function WizardChrome({ children, step, footer }: { children: React.ReactNode; s
   const activeIndex = steps.indexOf(step);
   return (
     <main className="flex min-h-screen flex-col bg-[#06070a] font-[var(--font-primary),ui-sans-serif,system-ui,sans-serif] text-[#fffeea]">
-      <header className="flex min-h-16 items-center justify-between border-b border-[#fffeea]/12 px-5 text-[#fffeea]/58 md:px-8">
-        <div className="flex min-w-0 items-center gap-2 text-sm md:gap-3">
+      <header className="flex min-h-16 items-center justify-between gap-4 border-b border-[#fffeea]/12 px-4 text-[#fffeea]/58 md:px-8">
+        <div className="flex min-w-0 flex-1 items-center gap-2 overflow-x-auto text-sm md:gap-3">
           <Home size={18} />
           {steps.slice(0, activeIndex + 1).map((item) => (
-            <span className="flex min-w-0 items-center gap-2 md:gap-3" key={item}>
+            <span className="flex shrink-0 items-center gap-2 md:gap-3" key={item}>
               <ChevronRight size={16} />
-              <span className={`truncate ${item === step ? "font-semibold text-white" : ""}`}>{item}</span>
+              <span className={item === step ? "font-semibold text-white" : ""}>{item}</span>
             </span>
           ))}
         </div>
-        <Link href="/vesting" aria-label="Close create flow">
+        <Link className="grid size-10 shrink-0 place-items-center rounded-[4px] border border-[#fffeea]/12 bg-[#0b0d11]" href="/vesting" aria-label="Close create flow">
           <X size={20} />
         </Link>
       </header>
       <div className="flex-1 overflow-y-auto">{children}</div>
-      <footer className="sticky bottom-0 z-20 border-t border-[#fffeea]/12 bg-[#06070a] px-8 py-5">
-        <div className="mx-auto flex w-full max-w-[1132px] items-center justify-between">{footer}</div>
+      <footer className="sticky bottom-0 z-20 border-t border-[#fffeea]/12 bg-[#06070a] px-4 py-4 md:px-8 md:py-5">
+        <div className="mx-auto flex w-full max-w-[1132px] items-center justify-between gap-3">{footer}</div>
       </footer>
     </main>
   );
@@ -2062,10 +2300,10 @@ export function TypePage() {
         </>
       }
     >
-      <section className="mx-auto flex min-h-[760px] max-w-[802px] flex-col items-center justify-center">
-        <h1 className="text-4xl font-semibold tracking-[-0.03em]">Choose type</h1>
-        <p className="mt-4 text-2xl text-[#fffeea]/62">Choose the vesting type you would like to create.</p>
-        <div className="mt-12 grid w-full grid-cols-1 gap-7 md:grid-cols-3">
+      <section className="mx-auto flex w-full max-w-[802px] flex-col items-center px-4 py-10 md:min-h-[760px] md:justify-center md:px-0">
+        <h1 className="text-3xl font-semibold tracking-[-0.03em] md:text-4xl">Choose type</h1>
+        <p className="mt-3 text-center text-base text-[#fffeea]/62 md:mt-4 md:text-2xl">Choose the vesting type you would like to create.</p>
+        <div className="mt-8 grid w-full grid-cols-1 gap-4 md:mt-12 md:grid-cols-3 md:gap-7">
           {options.map((option) => {
             const selected = draft.scheduleType === option.scheduleType;
             return (
@@ -2083,7 +2321,7 @@ export function TypePage() {
               type="button"
             >
               <FieldCard
-                className={`relative h-full p-8 transition ${
+                className={`relative h-full p-5 transition md:p-8 ${
                   selected
                     ? "border-[#f2d467] bg-[#17150f] shadow-[0_0_0_1px_rgba(242,212,103,0.65),0_18px_60px_rgba(0,0,0,0.24)]"
                     : "hover:border-[#fffeea]/35 hover:bg-[#111318]"
@@ -2097,7 +2335,7 @@ export function TypePage() {
                   <Check size={15} />
                 </span>
                 <span className={`block transition ${selected ? "scale-105" : ""}`}>{option.icon}</span>
-                <h2 className="mt-14 text-lg font-semibold">{option.title}</h2>
+                <h2 className="mt-8 text-lg font-semibold md:mt-14">{option.title}</h2>
                 <p className="mt-3 text-base leading-6 text-[#fffeea]/62">{option.text}</p>
                 {selected ? <p className="mt-6 text-sm font-semibold text-[#f2d467]">Selected</p> : null}
               </FieldCard>
@@ -2189,18 +2427,18 @@ export function ConfigurationPage() {
         </>
       }
     >
-      <section className="mx-auto flex w-full max-w-[1120px] flex-col gap-8 px-5 py-8 md:px-8 md:py-10">
+      <section className="mx-auto flex w-full max-w-[1120px] flex-col gap-6 px-4 py-6 md:gap-8 md:px-8 md:py-10">
         <div className="flex flex-col gap-2">
           <h1 className="text-2xl font-semibold tracking-[-0.02em] md:text-3xl">Configuration</h1>
           <p className="text-sm text-[#fffeea]/58">Set the token, release cadence, and contract permissions.</p>
         </div>
         {scheduleIssue ? <FieldCard className="p-4 text-sm text-amber-200">{scheduleIssue}</FieldCard> : null}
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,760px)_300px] lg:items-start">
-          <div className="flex flex-col gap-8">
+        <div className="grid gap-6 md:gap-8 lg:grid-cols-[minmax(0,760px)_300px] lg:items-start">
+          <div className="flex flex-col gap-6 md:gap-8">
             <section className="flex flex-col gap-5">
               <h2 className="text-sm font-semibold text-[#fffeea]/78">Vesting setup</h2>
               <div className="grid gap-x-5 gap-y-5 md:grid-cols-2">
-                <div>
+                <div className="min-w-0">
                   <SelectBox
                     label="Token"
                     onChange={(value) =>
@@ -2223,7 +2461,7 @@ export function ConfigurationPage() {
                       />
                     </div>
                   ) : (
-                    <p className="mt-2 truncate text-xs text-[#fffeea]/42">{veloraDevnetMint}</p>
+                    <p className="mt-2 break-all text-xs text-[#fffeea]/42 md:truncate">{veloraDevnetMint}</p>
                   )}
                 </div>
                 <div>
@@ -2366,7 +2604,7 @@ export function ConfigurationPage() {
             </section>
           </div>
 
-          <aside className="flex flex-col gap-3 lg:sticky lg:top-24">
+          <aside className="flex min-w-0 flex-col gap-3 lg:sticky lg:top-24">
             <h2 className="text-sm font-semibold text-[#fffeea]/78">Configuration summary</h2>
             <FieldCard className="p-4">
               <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2 lg:grid-cols-1">
@@ -2401,7 +2639,7 @@ function SummaryItem({ label, children }: { label: string; children: React.React
   return (
     <div className="min-w-0">
       <div className="text-xs font-medium text-[#fffeea]/45">{label}</div>
-      <div className="mt-1 truncate text-sm font-semibold text-white">{children}</div>
+      <div className="mt-1 break-words text-sm font-semibold text-white md:truncate">{children}</div>
     </div>
   );
 }
@@ -2428,14 +2666,14 @@ export function RecipientsPage() {
         </>
       }
     >
-      <section className="mx-auto flex w-full max-w-[1132px] flex-col py-14">
-        <h1 className="text-4xl font-semibold">Recipients</h1>
+      <section className="mx-auto flex w-full max-w-[1132px] flex-col px-4 py-8 md:px-8 md:py-14">
+        <h1 className="text-3xl font-semibold md:text-4xl">Recipients</h1>
         <div className="mt-8">
           <BalanceNotice issue={balanceIssue} state={tokenBalance} />
         </div>
         {recipientSaved ? (
-          <div className="mt-14 flex flex-col gap-7">
-            <FieldCard className="flex h-[68px] items-center justify-between px-5">
+          <div className="mt-8 flex flex-col gap-6 md:mt-14 md:gap-7">
+            <FieldCard className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-4 md:px-5">
               <div className="flex items-center gap-3">
                 <TokenIcon />
                 <div className="min-w-0">
@@ -2481,7 +2719,7 @@ export function RecipientsPage() {
                 ) : null}
               </div>
             </FieldCard>
-            <div className="flex justify-end gap-8 text-[#f2d467]">
+              <div className="flex flex-col gap-4 text-[#f2d467] sm:flex-row sm:justify-end sm:gap-8">
               <button className="inline-flex items-center gap-2" onClick={() => setModalOpen(true)} type="button">
                 <Plus size={18} />
                 Add manually
@@ -2493,7 +2731,7 @@ export function RecipientsPage() {
             </div>
           </div>
         ) : (
-          <div className="mt-14 flex flex-col gap-6">
+          <div className="mt-8 flex flex-col gap-4 md:mt-14 md:gap-6">
             <button className="flex h-[68px] items-center justify-center gap-3 rounded-[4px] border border-[#fffeea]/14 bg-[#13151a] text-lg text-[#fffeea]/78" onClick={() => setModalOpen(true)} type="button">
               <Plus size={22} />
               Add manually
@@ -2518,7 +2756,7 @@ function RecipientModal({ onClose, onSave }: { onClose: () => void; onSave: (pat
   const [recipient, setRecipient] = useState(draft.recipient);
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/62 px-4">
-      <div className="w-full max-w-[614px] rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] p-8 shadow-2xl">
+      <div className="max-h-[calc(100vh-32px)] w-full max-w-[614px] overflow-y-auto rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] p-5 shadow-2xl md:p-8">
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-semibold">{editing ? "Edit recipient" : "Add recipient"}</h2>
           <button onClick={onClose} type="button">
@@ -2538,7 +2776,7 @@ function RecipientModal({ onClose, onSave }: { onClose: () => void; onSave: (pat
           </label>
           <TextInput label="Recipient email address (Optional)" placeholder="hello@example.com" />
         </div>
-        <div className="mt-8 flex justify-end gap-3">
+        <div className="mt-8 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
           <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
           <PrimaryButton onClick={() => onSave({ amount, contractTitle: title.trim() || "Vesting stream", recipient })}>Save</PrimaryButton>
         </div>
@@ -2636,7 +2874,7 @@ function InfoItem({ label, children }: { label: string; children: React.ReactNod
   return (
     <div className="min-w-0">
       <div className="text-sm text-[#fffeea]/50">{label}</div>
-      <div className="mt-1.5 text-sm font-semibold text-white">{children}</div>
+      <div className="mt-1.5 break-words text-sm font-semibold text-white">{children}</div>
     </div>
   );
 }
@@ -2707,7 +2945,7 @@ export function ReviewPage() {
         </>
       }
     >
-      <section className="mx-auto flex w-full max-w-[536px] flex-col gap-7 py-9">
+      <section className="mx-auto flex w-full max-w-[536px] flex-col gap-6 px-4 py-8 md:gap-7 md:px-0 md:py-9">
         <h1 className="text-3xl font-semibold">Review</h1>
         <FieldCard className="flex items-center gap-3 p-3 text-xs text-[#fffeea]/70">
           <span className="text-amber-400">▲</span>
@@ -2723,7 +2961,7 @@ export function ReviewPage() {
         <DetailGrid draft={draft} />
         <hr className="border-[#fffeea]/12" />
         <h2 className="text-base font-semibold">Recipients</h2>
-        <FieldCard className="flex h-11 items-center gap-3 px-4 text-sm">
+        <FieldCard className="flex min-h-11 flex-wrap items-center gap-3 px-4 py-3 text-sm">
           <TokenIcon size="size-5" />
           <span className="font-semibold">{draft.contractTitle || "Vesting stream"}</span>
           <span className="text-[#fffeea]/58">{draft.amount} tokens</span>
@@ -2803,9 +3041,9 @@ export function ContractDetailPage() {
 
   return (
     <AppShell>
-      <section className="flex w-full max-w-[842px] flex-col gap-8 pb-10 pt-4">
-        <div className="flex flex-col gap-5 rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] p-5 md:p-6">
-          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+      <section className="mx-auto flex w-full max-w-[842px] flex-col gap-6 pb-8 pt-2 sm:gap-7 sm:pb-10 sm:pt-4 md:gap-8">
+        <div className="flex flex-col gap-5 rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] p-4 sm:p-5 md:p-6">
+          <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
             <div className="min-w-0">
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <span className="rounded-[4px] bg-[#f2d467]/14 px-3 py-1 text-xs text-[#f2d467]">{streamStatusLabel(stream)}</span>
@@ -2814,15 +3052,15 @@ export function ContractDetailPage() {
                   {stream.isCancellable ? "Creator cancellable" : "Non-cancellable"}
                 </span>
               </div>
-              <h1 className="text-2xl font-semibold tracking-[-0.02em] text-white">{streamTitle(stream, metadata)}</h1>
-              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-[#fffeea]/50">
+              <h1 className="break-words text-xl font-semibold leading-tight text-white sm:text-2xl">{streamTitle(stream, metadata)}</h1>
+              <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[#fffeea]/50">
                 <span>{stream.publicKey.toBase58().slice(0, 5)}...{stream.publicKey.toBase58().slice(-5)}</span>
                 <Copy className="text-[#fffeea]/55" size={14} />
                 <span className="hidden sm:inline">·</span>
                 <span>{scheduleLabel(stream.scheduleType)} vesting</span>
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-3">
+            <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3 md:shrink-0 [&>a]:w-full [&>button]:w-full sm:[&>a]:w-auto sm:[&>button]:w-auto">
               {isRecipient ? (
                 <PrimaryButton disabled={stream.claimableAmount === BigInt(0) || busyAction === "claim"} onClick={() => void runAction("claim", () => withdraw(stream))}>
                   {busyAction === "claim" ? "Claiming..." : "Claim"}
@@ -2833,62 +3071,62 @@ export function ContractDetailPage() {
                   Release milestone
                 </SecondaryButton>
               ) : null}
-                {isCreator && stream.status === "Active" && stream.isCancellable ? (
-                  <SecondaryButton disabled={busyAction === "cancel"} onClick={() => setCancelConfirmOpen(true)}>
-                    Cancel
-                  </SecondaryButton>
-                ) : null}
+              {isCreator && stream.status === "Active" && stream.isCancellable ? (
+                <SecondaryButton disabled={busyAction === "cancel"} onClick={() => setCancelConfirmOpen(true)}>
+                  Cancel
+                </SecondaryButton>
+              ) : null}
             </div>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
-            <FieldCard className="p-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <FieldCard className="min-w-0 p-4">
               <div className="text-xs text-[#fffeea]/50">Total amount</div>
-              <div className="mt-2 flex items-center gap-2 text-lg font-semibold">
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-base font-semibold sm:text-lg">
                 <TokenIcon size="size-5" />
                 {formatTokenAmount(stream.totalAmount)}
               </div>
             </FieldCard>
-            <FieldCard className="p-4">
+            <FieldCard className="min-w-0 p-4">
               <div className="text-xs text-[#fffeea]/50">Recipient</div>
-              <div className="mt-2 text-lg font-semibold">{stream.recipient.toBase58().slice(0, 5)}...{stream.recipient.toBase58().slice(-5)}</div>
+              <div className="mt-2 text-base font-semibold sm:text-lg">{stream.recipient.toBase58().slice(0, 5)}...{stream.recipient.toBase58().slice(-5)}</div>
             </FieldCard>
-            <FieldCard className="p-4">
+            <FieldCard className="min-w-0 p-4">
               <div className="text-xs text-[#fffeea]/50">Schedule</div>
-              <div className="mt-2 text-lg font-semibold">{scheduleLabel(stream.scheduleType)}</div>
+              <div className="mt-2 text-base font-semibold sm:text-lg">{scheduleLabel(stream.scheduleType)}</div>
             </FieldCard>
           </div>
-          </div>
+        </div>
 
-          {actionError ? <FieldCard className="p-4 text-sm text-red-300">{actionError}</FieldCard> : null}
-          {transactionStage !== "idle" ? (
-            <FieldCard className={`p-4 text-sm ${transactionStage === "error" ? "text-red-300" : "text-[#fffeea]/70"}`}>
-              {transactionStageLabel(transactionStage)}
-            </FieldCard>
-          ) : null}
+        {actionError ? <FieldCard className="p-4 text-sm text-red-300">{actionError}</FieldCard> : null}
+        {transactionStage !== "idle" ? (
+          <FieldCard className={`p-4 text-sm ${transactionStage === "error" ? "text-red-300" : "text-[#fffeea]/70"}`}>
+            {transactionStageLabel(transactionStage)}
+          </FieldCard>
+        ) : null}
 
-          <hr className="border-[#fffeea]/12" />
+        <hr className="border-[#fffeea]/12" />
 
         <SectionTitle>Contract details</SectionTitle>
-        <div className="grid gap-x-10 gap-y-7 md:grid-cols-3">
+        <div className="grid gap-x-10 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
           <InfoItem label="Vesting type">{scheduleLabel(stream.scheduleType)}</InfoItem>
-            <InfoItem label="Total">
-              <span className="inline-flex items-center gap-2">
-                <TokenIcon size="size-4" /> {formatTokenAmount(stream.totalAmount)} <span className="text-xs text-[#fffeea]/42">tokens</span>
-              </span>
-            </InfoItem>
-            <InfoItem label="Unlocked">{formatTokenAmount(stream.unlockedAmount)}</InfoItem>
-            <InfoItem label="Claimed">{formatTokenAmount(stream.amountClaimed)}</InfoItem>
-            <InfoItem label="Claimable">{formatTokenAmount(stream.claimableAmount)}</InfoItem>
-            <InfoItem label="Time remaining">{timeRemainingLabel(stream)}</InfoItem>
-            <InfoItem label="Start time">{formatDate(stream.startTimestamp)}</InfoItem>
-            <InfoItem label="End time">{formatDate(stream.endTimestamp)}</InfoItem>
-          </div>
+          <InfoItem label="Total">
+            <span className="inline-flex items-center gap-2">
+              <TokenIcon size="size-4" /> {formatTokenAmount(stream.totalAmount)} <span className="text-xs text-[#fffeea]/42">tokens</span>
+            </span>
+          </InfoItem>
+          <InfoItem label="Unlocked">{formatTokenAmount(stream.unlockedAmount)}</InfoItem>
+          <InfoItem label="Claimed">{formatTokenAmount(stream.amountClaimed)}</InfoItem>
+          <InfoItem label="Claimable">{formatTokenAmount(stream.claimableAmount)}</InfoItem>
+          <InfoItem label="Time remaining">{timeRemainingLabel(stream)}</InfoItem>
+          <InfoItem label="Start time">{formatDate(stream.startTimestamp)}</InfoItem>
+          <InfoItem label="End time">{formatDate(stream.endTimestamp)}</InfoItem>
+        </div>
 
         <hr className="border-[#fffeea]/12" />
 
         <SectionTitle>Participants & settings</SectionTitle>
-        <div className="grid gap-x-10 gap-y-7 md:grid-cols-3">
+        <div className="grid gap-x-10 gap-y-6 sm:grid-cols-2 lg:grid-cols-3">
           <InfoItem label="Sender">
             {stream.creator.toBase58().slice(0, 5)}...{stream.creator.toBase58().slice(-5)} <Copy className="inline text-[#fffeea]/55" size={13} />
           </InfoItem>
@@ -2899,23 +3137,23 @@ export function ContractDetailPage() {
             {stream.mint.toBase58().slice(0, 5)}...{stream.mint.toBase58().slice(-5)} <Copy className="inline text-[#fffeea]/55" size={13} />
           </InfoItem>
           <InfoItem label="Who can cancel">{stream.isCancellable ? "Creator" : "Nobody"}</InfoItem>
-            <InfoItem label="Milestone">{stream.scheduleType === "Milestone" ? (stream.milestoneReleased ? "Released" : "Waiting") : "Not used"}</InfoItem>
-          </div>
-        </section>
-        {cancelConfirmOpen ? (
-          <CancelConfirmationDialog
-            busy={busyAction === "cancel"}
-            onClose={() => setCancelConfirmOpen(false)}
-            onConfirm={() => {
-              setCancelConfirmOpen(false);
-              void runAction("cancel", () => cancel(stream));
-            }}
-            stream={stream}
-            title={streamTitle(stream, metadata)}
-          />
-        ) : null}
-      </AppShell>
-    );
+          <InfoItem label="Milestone">{stream.scheduleType === "Milestone" ? (stream.milestoneReleased ? "Released" : "Waiting") : "Not used"}</InfoItem>
+        </div>
+      </section>
+      {cancelConfirmOpen ? (
+        <CancelConfirmationDialog
+          busy={busyAction === "cancel"}
+          onClose={() => setCancelConfirmOpen(false)}
+          onConfirm={() => {
+            setCancelConfirmOpen(false);
+            void runAction("cancel", () => cancel(stream));
+          }}
+          stream={stream}
+          title={streamTitle(stream, metadata)}
+        />
+      ) : null}
+    </AppShell>
+  );
 }
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
