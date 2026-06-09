@@ -19,9 +19,3 @@ export type ScheduleTextItem = {
   href: string;
   paragraphs: string[];
 };
-
-export type ContactAction = {
-  title: string;
-  label: string;
-  href: string;
-};

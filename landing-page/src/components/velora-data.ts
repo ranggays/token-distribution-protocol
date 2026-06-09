@@ -1,20 +1,14 @@
 import type {
   ActionLink,
   CapabilityColumn,
-  ContactAction,
   NavItem,
   ScheduleTextItem,
 } from "@/types/velora";
 
 export const navItems: NavItem[] = [
-  { label: "Overview", href: "#overview" },
-  { label: "Use Cases", href: "#use-cases" },
-  { label: "How It Works", href: "#how-it-works" },
-  { label: "Schedules", href: "#schedules" },
-  { label: "Security", href: "#security" },
   {
     label: "Docs",
-    href: "https://github.com/ranggays/token-distribution-protocol#readme",
+    href: "/docs",
   },
   { label: "Open App", href: "/app", cta: true },
 ];
@@ -90,23 +84,5 @@ export const scheduleItems: ScheduleTextItem[] = [
       "Milestone schedules release tokens after an agreed outcome or delivery point is reached.",
       "Useful for grants, project work, and payouts tied to progress instead of only time.",
     ],
-  },
-];
-
-export const contactActions: ContactAction[] = [
-  {
-    title: "Explore docs",
-    label: "GitHub README",
-    href: "https://github.com/ranggays/token-distribution-protocol#readme",
-  },
-  {
-    title: "Open app",
-    label: "Launch workspace",
-    href: "/app",
-  },
-  {
-    title: "Follow progress",
-    label: "GitHub repository",
-    href: "https://github.com/ranggays/token-distribution-protocol",
   },
 ];

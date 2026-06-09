@@ -44,7 +44,7 @@ export default function SecurityPage() {
           <h2>Security evidence for the current devnet program.</h2>
         </div>
         <p>
-          The current Token Distribution Protocol backend has been checked through Anchor
+          The current Velora backend has been checked through Anchor
           integration tests, Rust unit coverage, a code-derived security checklist, and a
           devnet smoke test after redeployment.
         </p>
