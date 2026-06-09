@@ -268,7 +268,7 @@ export function VeloraMotion() {
         introCopy,
         { opacity: 0.18, y: 24 },
         {
-          opacity: 0.4,
+          opacity: 1,
           y: 0,
           ease: "none",
           scrollTrigger: {

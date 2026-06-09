@@ -6,7 +6,6 @@ import { HeroKineticCanvas } from "@/components/hero-kinetic-canvas";
 import { VeloraWaitlist } from "@/components/velora-waitlist";
 import {
   capabilities,
-  contactActions,
   heroLinks,
   introActions,
   scheduleItems,
@@ -25,7 +24,7 @@ export function HeroSection() {
       <div className="hero-content">
         <div className="hero-title-row">
           <div className="hero-title header-title-effects">
-            <h1>Token Distribution Protocol - Plan Token Releases That Unlock on Schedule</h1>
+            <h1>Velora - Plan Token Releases That Unlock on Schedule</h1>
             <h2>
               Plan token
               <br />
@@ -60,7 +59,7 @@ export function IntroSection() {
         <IntroRevealHeading text="Lock the tokens in the vault." />
         <IntroRevealHeading text="Let recipients claim over time." />
         <p>
-          TDP helps projects distribute tokens without manual tracking. <br />
+          Velora helps projects distribute tokens without manual tracking. <br />
           Creators choose the amount, recipient, and unlock schedule. <br />
           The program holds the tokens and releases them when they become claimable.
         </p>
@@ -173,7 +172,7 @@ export function VisionSection() {
             <h2>for token releases.</h2>
             </div>
             <p>
-              TDP keeps every release plan clear before tokens move. <br />
+              Velora keeps every release plan clear before tokens move. <br />
               The schedule is set by the creator, the tokens stay locked in the
               vault, and recipients can only claim the amount that has unlocked.
             </p>
@@ -224,21 +223,6 @@ export function ContactSection() {
           </h2>
         </div>
         <VeloraWaitlist />
-        <div className="contact-actions">
-          {contactActions.map((action, index) => (
-            <article
-              className="contact-action motion-reveal"
-              data-duration={2 + index * 0.35}
-              data-delay={0.3 + index * 0.05}
-              key={action.title}
-            >
-              <h3>{action.title}</h3>
-              <Link className="magnet-effect" href={action.href}>
-                {action.label}
-              </Link>
-            </article>
-          ))}
-        </div>
       </div>
     </section>
   );
@@ -260,7 +244,7 @@ export function VeloraFooter() {
             <span className="velora-logo-wordmark">Velora</span>
           </div>
           <div className="company-info">
-            <p>Token Distribution Protocol</p>
+            <p>Velora token release workspace</p>
             <p>Programmable token releases</p>
             <p>Team 5 - Mancer x Superteam Indonesia</p>
           </div>
@@ -283,9 +267,9 @@ export function VeloraFooter() {
           <p>Resources</p>
           <Link
             className="magnet-effect"
-            href="https://github.com/ranggays/token-distribution-protocol#readme"
+            href="/docs"
           >
-            readme
+            docs
           </Link>
           <Link
             className="magnet-effect"
