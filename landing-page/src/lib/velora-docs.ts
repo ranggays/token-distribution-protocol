@@ -16,6 +16,10 @@ export type DocsArticle = {
   description: string;
   updatedAt: string;
   readTime: string;
+  video?: {
+    src: string;
+    title: string;
+  };
   sections: DocsArticleSection[];
   relatedSlugs: string[];
 };
@@ -76,6 +80,10 @@ export const docsCollections: DocsCollection[] = [
           "A step-by-step guide for creating a Velora release plan from token setup to review.",
         updatedAt: "June 9, 2026",
         readTime: "5 min read",
+        video: {
+          src: "https://drive.google.com/file/d/1r597aRp8m6rzGcGPyyRLpKTi6VDJ46y3/preview",
+          title: "Create a vesting schedule video walkthrough",
+        },
         relatedSlugs: ["what-is-vesting", "vesting-troubleshooting"],
         sections: [
           {
@@ -220,6 +228,10 @@ export const docsCollections: DocsCollection[] = [
           "A step-by-step guide for withdrawing unlocked tokens from a Velora stream.",
         updatedAt: "June 9, 2026",
         readTime: "4 min read",
+        video: {
+          src: "https://drive.google.com/file/d/1MexaXIG_tokbkoQ62gYitF5fdRC8rLJn/preview",
+          title: "Claim available tokens video walkthrough",
+        },
         relatedSlugs: ["what-claiming-means", "claim-troubleshooting"],
         sections: [
           {

@@ -200,6 +200,17 @@ export function DocsArticleView({ article, collection }: DocsArticleProps) {
           <h1>{article.title}</h1>
           <p>{article.description}</p>
           <span>{article.updatedAt} · {article.readTime}</span>
+          {article.video ? (
+            <figure className="docs-article-video">
+              <iframe
+                src={article.video.src}
+                title={article.video.title}
+                allow="autoplay; encrypted-media; picture-in-picture"
+                allowFullScreen
+              />
+              <figcaption>{article.video.title}</figcaption>
+            </figure>
+          ) : null}
         </header>
 
         <aside className="docs-toc" aria-label="Table of contents">
