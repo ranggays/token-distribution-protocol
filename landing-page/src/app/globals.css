@@ -2073,6 +2073,31 @@ body.loaded #main-content {
   line-height: 1.25;
 }
 
+.docs-article-video {
+  width: 100%;
+  margin-top: 34px;
+  overflow: hidden;
+  border: 1px solid rgb(255 254 234 / 14%);
+  border-radius: 0.65rem;
+  background: rgb(12 13 16 / 92%);
+  box-shadow: 0 28px 80px rgb(0 0 0 / 26%);
+}
+
+.docs-article-video iframe {
+  display: block;
+  width: 100%;
+  height: clamp(360px, 54vw, 660px);
+  border: 0;
+}
+
+.docs-article-video figcaption {
+  border-top: 1px solid rgb(255 254 234 / 10%);
+  padding: 12px 14px;
+  color: rgb(255 254 234 / 56%);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 .docs-article-body {
   grid-column: 1;
   grid-row: 2;
@@ -2256,6 +2281,10 @@ body.loaded #main-content {
 
   .docs-article {
     gap: 34px;
+  }
+
+  .docs-article-video iframe {
+    height: clamp(260px, 72vw, 420px);
   }
 
   .docs-article-header,
