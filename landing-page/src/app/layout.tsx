@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Analytics } from "@vercel/analytics/next";
 import { VeloraChainProvider } from "@/lib/velora-chain";
 import "./globals.css";
 
@@ -21,6 +22,7 @@ export default function RootLayout({
     <html lang="en" className="h-full antialiased" suppressHydrationWarning>
       <body suppressHydrationWarning>
         <VeloraChainProvider>{children}</VeloraChainProvider>
+        <Analytics />
       </body>
     </html>
   );
