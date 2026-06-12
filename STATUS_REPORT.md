@@ -8,9 +8,13 @@
 
 ## Executive Summary
 
-The Token Distribution Protocol (branded as **Velora**) is a Solana on-chain program that lets anyone create token vesting streams — lock SPL tokens into a vault and release them to recipients on a schedule. The product works end-to-end on devnet: create stream, view dashboard, withdraw tokens, cancel streams.
+The Token Distribution Protocol (branded as **Velora**) is a Solana on-chain program that lets anyone create token vesting streams — lock SPL tokens into a vault and release them to recipients on a schedule. The on-chain program is solid and fully covered by tests. The web app drives the full lifecycle: create stream → view dashboard → withdraw → cancel.
 
 **Week 8 focused on:** fixing vesting math bugs, enforcing authority checks, cleaning dead code, syncing docs with reality, and running full e2e test suites.
+
+**Week 8 stabilization pass (this report) found and fixed a release-blocking frontend bug:** stream creation crashed at the final "Create Vesting" step for *every* schedule type, because the submit handler parsed the optional `cliffAmount` field with a parser that rejects `0` (the default value). No stream could be created from the UI. This is now fixed and re-verified. See [Bugs Fixed](#bugs-fixed-this-week-week-8) #5.
+
+> **Verification scope (be honest about it):** the on-chain program is verified by 18 Rust unit tests + 23 TypeScript integration tests on a local validator (all passing, run this session). The frontend is verified by a clean `tsc --noEmit` and a successful production build. A full *manual* devnet click-through (real Phantom wallet, real RPC) was **not** executed in this environment — it requires a browser wallet. The create-flow blocker that would have broken that click-through is fixed; recommend BD/QA do one manual devnet run before any demo. See [Verification Evidence](#verification-evidence).
 
 ---
 
@@ -20,7 +24,7 @@ The Token Distribution Protocol (branded as **Velora**) is a Solana on-chain pro
 - **4 instruction types** fully implemented: `create_stream`, `withdraw`, `cancel`, `release_milestone`
 - **4 schedule types:** Linear, Cliff, Cliff+Linear, Milestone
 - **3 cancel authority modes:** CreatorOnly, Either, Neither
-- **Robust error handling:** 14 custom error codes, all arithmetic uses checked math (`checked_add`, `checked_sub`, `checked_mul`, `checked_div`), no `unwrap()` in production code
+- **Robust error handling:** 15 custom error codes, all arithmetic uses checked math (`checked_add`, `checked_sub`, `checked_mul`, `checked_div`), no `unwrap()` in production code
 - **PDA security:** All accounts derived via deterministic seeds — stream configs, vaults, cannot be forged
 
 ### Frontend ("Velora")
@@ -61,7 +65,7 @@ The Token Distribution Protocol (branded as **Velora**) is a Solana on-chain pro
 |---|---|---|---|
 | No UI selectors for `cancelAuthority` | Medium | Known limitation | Hardcoded to `CreatorOnly` in the draft defaults. Users can't choose `Either` or `Neither` from the UI. |
 | No UI selector for `authorityType` | Medium | Known limitation | Defaults to `None`. SingleKey/MultiSig not selectable. |
-| No UI field for `cliffAmount` | Medium | Known limitation | Defaults to `0`. Cliff+Linear streams always vest linearly from cliff (no lump sum). |
+| No UI field for `cliffAmount` | Medium | Known limitation | Defaults to `0` and is not editable in the UI. Cliff+Linear streams always vest linearly from cliff (no lump sum). The `0` default no longer crashes creation (fixed — see Bugs Fixed #5). Exposing a real input is a Phase 3 item. |
 | No frontend CI | Medium | Known limitation | Landing page has no TypeScript checking, linting, or tests in CI. |
 | Public devnet RPC hardcoded | Low | Acceptable | Uses `https://api.devnet.solana.com` directly. Will hit rate limits under load. Supports env var override for faucet only. |
 | Program ID duplicated (Rust + TS) | Low | Acceptable | Must be kept in sync manually if redeployed. |
@@ -124,6 +128,45 @@ The Token Distribution Protocol (branded as **Velora**) is a Solana on-chain pro
 
 **Files:** `backend/programs/backend/src/lib.rs`
 
+### 5. `cliffAmount` default `"0"` crashed every stream creation — **FIXED** (release blocker)
+
+**Problem:** The Week 8 commit that wired `cliffAmount` into the create flow used `parseRawAmount(draft.cliffAmount)` in the review-step submit handler. `parseRawAmount` throws `"Amount must be greater than zero."` on any value `<= 0`. Since `cliffAmount` defaults to `"0"` and has no UI input, **every** stream creation — Linear, Cliff, CliffLinear, Milestone — failed at the "Create Vesting" button with a misleading error, before any transaction was sent. The product could not create a stream end-to-end from the UI.
+
+**Fix:**
+- Added `parseRawAmountAllowZero()` to `velora-chain.tsx` — same digit validation, but `0` is a valid value (a CliffLinear stream with `cliffAmount=0` correctly vests linearly from the cliff).
+- Submit handler now uses `parseRawAmountAllowZero(draft.cliffAmount)`.
+
+**Files:** `landing-page/src/lib/velora-chain.tsx`, `landing-page/src/components/velora-prototype.tsx`
+
+### 6. No on-chain guard that `cliff_amount <= total_amount` — **FIXED**
+
+**Problem:** `create_stream` validated cliff *timestamp* but never validated the cliff *amount*. A `CliffLinear` stream created with `cliff_amount > total_amount` would store fine, then **underflow** at withdraw time (`total_amount - cliff_amount`), surfacing as a generic `MathOverflow` instead of a clear creation-time rejection. No funds were at risk (the underflow aborts the transaction), but the error was opaque and the bad stream was un-withdrawable.
+
+**Fix:**
+- Added `require!(cliff_amount <= total_amount, InvalidCliffAmount)` for `CliffLinear` in `create_stream`.
+- Added error code `InvalidCliffAmount` (6014) to the program, the frontend IDL, and the error-humanizer map.
+- Added a Rust unit test pinning the underlying underflow behavior.
+
+> **Note:** this guard is additive and ships in the *source*. The program currently deployed to devnet predates it. The default flow (`cliffAmount=0`) is unaffected, so e2e is unblocked today; redeploy to devnet to activate the guard for custom cliff amounts.
+
+**Files:** `backend/programs/backend/src/lib.rs`, `landing-page/src/lib/velora-chain.tsx`
+
+---
+
+## Verification Evidence
+
+All commands run during this stabilization pass on June 12, 2026:
+
+| Check | Command | Result |
+|---|---|---|
+| Rust unit tests | `cargo test` (program) | ✅ **18 passed**, 0 failed (was 17; +1 for cliff-amount overflow) |
+| Integration tests | `anchor test` (local validator) | ✅ **23 passing** (~1m wall time) |
+| Frontend type-check | `tsc --noEmit` (landing-page) | ✅ **0 errors** |
+| Frontend build | `npm run build` (landing-page) | ✅ **Build succeeded**, 23 routes generated |
+| Program lint | `cargo clippy --all-targets` | ✅ **Clean**, 0 warnings |
+
+Integration tests exercise the full lifecycle against a real SPL token: create + lock in PDA vault, linear/cliff/milestone unlock, partial withdrawals, completion, cancel (before cliff / mid-stream / fully-vested / already-cancelled), and authority rejection (unauthorized withdraw/cancel, non-cancellable, `Neither`, `Either`). This is the strongest evidence the protocol works end-to-end; it runs on localnet rather than devnet but uses identical program logic.
+
 ---
 
 ## Performance Profile
@@ -134,7 +177,7 @@ The Token Distribution Protocol (branded as **Velora**) is a Solana on-chain pro
 |---|---|---|---|
 | Program binary size | 316 KB | 400 KB | ✅ 79% used |
 | StreamConfig account size | 359 bytes | 10 MB | ✅ Tiny |
-| Custom error codes | 14 | — | ✅ Good coverage |
+| Custom error codes | 15 | — | ✅ Good coverage |
 | Instruction count | 4 | — | ✅ Minimal |
 
 ### Transaction Performance (Localnet)
@@ -162,7 +205,7 @@ The Token Distribution Protocol (branded as **Velora**) is a Solana on-chain pro
 
 | Category | Count | Status |
 |---|---|---|
-| Rust unit tests | 17 | ✅ All passing |
+| Rust unit tests | 18 | ✅ All passing |
 | Integration tests (localnet) | 23 | ✅ All passing |
 | TypeScript compilation | 0 errors | ✅ Clean |
 | Frontend tests | 0 | ❌ Not implemented |
@@ -209,21 +252,24 @@ The Token Distribution Protocol (branded as **Velora**) is a Solana on-chain pro
 - Support 4 schedule types: linear, cliff, cliff+linear, milestone
 - Withdraw tokens as they vest (streaming claims)
 - Cancel streams with configurable authority (creator-only, either party, neither)
-- Works on devnet today with a polished web UI
+- Runs on devnet with a polished Velora-branded web UI (wallet connect, dashboard, built-in test-token faucet)
 
 ### What the Product Can't Do (Yet)
 - No multi-sig approval for milestone releases
 - No per-withdrawal receipts (audit trail)
 - No batch stream creation
-- Advanced configuration (cancel authority, cliff amounts) requires API — no UI yet
+- Advanced configuration (cancel authority, cliff lump-sum amounts, authority type) is wired through the SDK but has **no UI selectors** — defaults are used unless set in code
 - Mainnet not deployed yet
 
+### Honest caveat for demos
+The blocking bug that stopped *any* stream from being created via the UI was fixed in this pass and the program is fully test-covered, **but** no human has yet clicked through the live devnet flow with a real wallet since the fix. **Before any live demo or public claim of "works on devnet," do one manual run:** connect Phantom → faucet test tokens → create a linear stream → see it on the dashboard → withdraw → cancel. Budget ~5 minutes. If that passes, the e2e claim is safe to make.
+
 ### Key Talking Points
-- Built on Solana for speed and low cost
-- Anchor framework ensures program security (PDA derivation, checked math, 14 error codes)
-- 40 test cases covering all happy paths and edge cases
+- Built on Solana for speed and low cost (each operation ~3–4s incl. validator overhead; rent-cheap 359-byte stream accounts)
+- Anchor framework ensures program security (deterministic PDA derivation, all-checked math, 15 custom error codes, no `unwrap()` in production paths)
+- 41 automated test cases (18 Rust unit + 23 integration) covering happy paths, edge cases, authority enforcement, and overflow safety — all passing
 - Polished Velora-branded frontend with wallet integration, dashboard, and analytics
-- Program binary at 79% of Solana's size limit — room for Phase 3 features
+- Program binary at ~79% of Solana's size limit — room for Phase 3 features
 
 ---
 

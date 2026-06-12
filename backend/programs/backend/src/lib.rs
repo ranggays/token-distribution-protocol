@@ -30,6 +30,14 @@ pub mod backend {
                 ErrorCode::InvalidSchedule
             );
         }
+        // A CliffLinear lump sum cannot exceed the total — otherwise the linear
+        // remainder (total - cliff_amount) underflows at withdraw time.
+        if matches!(params.schedule_type, ScheduleType::CliffLinear) {
+            require!(
+                params.cliff_amount <= params.total_amount,
+                ErrorCode::InvalidCliffAmount
+            );
+        }
         let now = Clock::get()?.unix_timestamp;
         let stream_config = &mut ctx.accounts.stream_config;
 
@@ -570,6 +578,8 @@ pub enum ErrorCode {
     InvalidVault,
     #[msg("Cancellation is disabled for this stream.")]
     CancellationDisabled,
+    #[msg("Cliff amount cannot exceed the total stream amount.")]
+    InvalidCliffAmount,
 }
 
 #[cfg(test)]
@@ -744,6 +754,18 @@ mod tests {
         config.cliff_timestamp = 0;
         // cliff_timestamp=0 means cliff is at start — should unlock all at start
         assert_eq!(compute_unlocked(&config, 100).unwrap(), 1_000);
+    }
+
+    #[test]
+    fn cliff_linear_with_cliff_amount_exceeding_total_overflows() {
+        // create_stream now rejects this at creation (InvalidCliffAmount).
+        // This test pins the underlying math: without that guard, the linear
+        // remainder (total - cliff_amount) underflows once past the cliff.
+        let mut config = stream_config(ScheduleType::CliffLinear);
+        config.cliff_timestamp = 150;
+        config.cliff_amount = 2_000; // > total_amount (1_000)
+
+        assert!(compute_unlocked(&config, 175).is_err());
     }
 
     #[test]

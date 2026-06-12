@@ -111,6 +111,7 @@ const veloraIdl = {
     { code: 6011, name: "InvalidMint", msg: "Token account mint does not match the stream mint." },
     { code: 6012, name: "InvalidVault", msg: "Vault token account does not match the stream vault." },
     { code: 6013, name: "CancellationDisabled", msg: "Cancellation is disabled for this stream." },
+    { code: 6014, name: "InvalidCliffAmount", msg: "Cliff amount cannot exceed the total stream amount." },
   ],
   types: [
     {
@@ -354,6 +355,7 @@ const ANCHOR_ERRORS: Record<number, string> = {
   6011: "Token account mint does not match the stream mint.",
   6012: "Vault token account does not match.",
   6013: "Cancellation is disabled for this stream.",
+  6014: "Cliff amount cannot exceed the total stream amount.",
 };
 
 function parseProgramError(error: unknown): string | null {
@@ -825,6 +827,18 @@ export function parseRawAmount(value: string) {
   const amount = BigInt(trimmed);
   if (amount <= BigInt(0)) throw new Error("Amount must be greater than zero.");
   return amount;
+}
+
+/**
+ * Parse a raw token amount that is allowed to be zero (e.g. cliff lump-sum).
+ * A zero cliff amount is valid — a CliffLinear stream with cliffAmount=0 simply
+ * vests linearly from the cliff. The strict {@link parseRawAmount} rejects zero,
+ * so it must not be used for these optional amount fields.
+ */
+export function parseRawAmountAllowZero(value: string) {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) throw new Error("Amount must be a whole raw token-unit number.");
+  return BigInt(trimmed);
 }
 
 export { PROGRAM_ID, ZERO_PUBKEY };
