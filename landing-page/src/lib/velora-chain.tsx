@@ -357,14 +357,23 @@ const ANCHOR_ERRORS: Record<number, string> = {
 };
 
 function parseProgramError(error: unknown): string | null {
-  if (!(error instanceof Error)) return null;
-  const msg = error.message;
+  // Build searchable text from every surface the error might expose.
+  const parts: string[] = [];
+  if (error instanceof Error) {
+    parts.push(error.message);
+    parts.push(error.toString());
+  }
+  // Anchor/SendTransactionError often stashes raw logs here.
+  const errorObj = error as Record<string, unknown>;
+  if (Array.isArray(errorObj.logs)) {
+    parts.push(errorObj.logs.join("\n"));
+  }
+  const haystack = parts.join("\n");
 
-  // Anchor program errors (6000+)
-  const anchorMatch = msg.match(/custom program error:\s*0x([0-9a-fA-F]+)/);
-  if (anchorMatch) {
-    const code = parseInt(anchorMatch[1], 16);
-    // SPL Token errors are 0x0–0xf; Anchor custom errors start at 0x1770 (6000)
+  // Match "custom program error: 0xNNNN" (Anchor/SPL Token)
+  const hexMatch = haystack.match(/custom program error:\s*0x([0-9a-fA-F]+)/);
+  if (hexMatch) {
+    const code = parseInt(hexMatch[1], 16);
     if (code >= 0x1770) {
       const anchorCode = code - 0x1770;
       return ANCHOR_ERRORS[anchorCode] ?? `Program error ${anchorCode}.`;
@@ -372,10 +381,12 @@ function parseProgramError(error: unknown): string | null {
     return SPL_TOKEN_ERRORS[code] ?? `Token program error 0x${code.toString(16)}.`;
   }
 
-  // Some errors embed "Error: <log>" in the logs
-  const logMatch = msg.match(/Error:\s*(owner does not match|not enough|insufficient)/i);
-  if (logMatch) {
+  // Match raw log lines: "Error: owner does not match"
+  if (/owner does not match/i.test(haystack)) {
     return "Token account owner does not match the signer. Use \"Get test tokens\" to mint to your current wallet.";
+  }
+  if (/not enough|insufficient/i.test(haystack)) {
+    return "Insufficient token balance for this transaction.";
   }
 
   return null;
@@ -384,10 +395,9 @@ function parseProgramError(error: unknown): string | null {
 /** Wrap any async operation to throw human-readable errors. */
 function humanizeError<T>(promise: Promise<T>): Promise<T> {
   return promise.catch((error) => {
-    if (error instanceof Error) {
-      const human = parseProgramError(error);
-      if (human) throw new Error(human);
-    }
+    console.debug("[humanizeError] raw error:", error);
+    const human = parseProgramError(error);
+    if (human) throw new Error(human);
     throw error;
   });
 }
