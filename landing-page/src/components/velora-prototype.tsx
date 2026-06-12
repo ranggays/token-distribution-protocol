@@ -211,6 +211,9 @@ type VestingDraft = {
   cliffDelayDays: number;
   milestoneDescription: string;
   cancellable: boolean;
+  cliffAmount: string;
+  authorityType: "None" | "SingleKey" | "MultiSig";
+  cancelAuthority: "CreatorOnly" | "Either" | "Neither";
 };
 
 type TransactionStage = "idle" | "wallet_approval" | "sending" | "confirming" | "success" | "error";
@@ -249,6 +252,9 @@ const defaultVestingDraft: VestingDraft = {
   cliffDelayDays: 30,
   milestoneDescription: "",
   cancellable: true,
+  cliffAmount: "0",
+  authorityType: "None",
+  cancelAuthority: "CreatorOnly",
 };
 
 function dateToLocalInputValue(date: Date) {
@@ -593,7 +599,8 @@ function BalanceNotice({ state, issue }: { state: TokenBalanceResult; issue?: st
   const [faucetStatus, setFaucetStatus] = useState<"idle" | "minting" | "success" | "error">("idle");
   const [faucetMessage, setFaucetMessage] = useState<string | null>(null);
   const hasIssue = Boolean(issue) || state.status === "missing" || state.status === "invalid" || state.status === "error";
-  const showFaucetAction = walletPublicKey && (state.status === "missing" || issue === "Insufficient token balance for this amount.");
+  const hasZeroBalance = state.status === "ready" && state.balance && state.balance.amount === BigInt(0);
+  const showFaucetAction = walletPublicKey && (state.status === "missing" || hasZeroBalance || issue === "Insufficient token balance for this amount.");
 
   const requestTestTokens = async () => {
     if (!walletPublicKey) return;
@@ -2910,9 +2917,13 @@ export function ReviewPage() {
         startTimestamp,
         endTimestamp,
         cliffTimestamp,
+        cliffAmount: parseRawAmount(draft.cliffAmount),
         scheduleType: draft.scheduleType,
+        authorityType: draft.authorityType,
+        releaseAuthority: draft.scheduleType === "Milestone" ? walletPublicKey : null,
         milestoneDescription: draft.milestoneDescription,
         isCancellable: draft.cancellable,
+        cancelAuthority: draft.cancelAuthority,
       };
       const result = await createStream(input);
       setTransactionStage("confirming");

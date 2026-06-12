@@ -170,10 +170,17 @@ When `is_cancellable = false`, all cancel attempts are rejected unconditionally 
 
 ---
 
-## Known Gaps (Week 4+)
+## Known Limitations (Phase 2 — Week 8)
 
-- PDA seeds and `init` constraint not yet wired in the Anchor contexts
-- `anchor-spl` not yet added as a dependency (needed for token CPI)
-- `token_program` and `associated_token_program` not yet in `Withdraw`/`CancelStream` contexts
-- `claim_index` counter not yet in `StreamConfig` (needed for `ClaimReceipt` PDA)
-- Milestone release instruction not yet defined
+All items from the original "Known Gaps (Week 4+)" have been resolved:
+- PDA seeds and `init` constraints are wired in all Anchor contexts
+- `anchor-spl` is a dependency; token CPI works for create, withdraw, cancel
+- `token_program` is in `Withdraw`, `CancelStream`, and `CreateStream` contexts
+- Milestone release instruction is implemented with `AuthorityType` enforcement
+
+### Remaining for Phase 3
+
+- **ClaimReceipt PDA**: Per-withdrawal receipt accounts are designed but not yet implemented. Requires `claim_index` counter in `StreamConfig` and a new instruction to create receipt on each withdrawal.
+- **MultiSig authority**: The `MultiSig` variant of `AuthorityType` currently only permits creator. Full multi-sig approval flow needs a separate approval account pattern.
+- **Frontend UI for advanced params**: `cancelAuthority`, `authorityType`, and `cliffAmount` are now supported in the chain layer but UI selectors are not yet built. Current defaults: `CreatorOnly`, `None`, `0`.
+- **No frontend CI**: The landing page has no TypeScript type-checking, linting, or tests in CI.

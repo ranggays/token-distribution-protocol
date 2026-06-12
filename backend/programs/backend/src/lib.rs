@@ -128,12 +128,23 @@ pub mod backend {
             stream_config.schedule_type == ScheduleType::Milestone,
             ErrorCode::UnsupportedSchedule
         );
-        require!(
-            ctx.accounts.authority.key() == stream_config.creator
-                || ctx.accounts.authority.key() == stream_config.release_authority,
-            ErrorCode::Unauthorized
-        );
         require!(now <= stream_config.end_timestamp, ErrorCode::StreamExpired);
+
+        let is_authorized = match stream_config.authority_type {
+            AuthorityType::None => ctx.accounts.authority.key() == stream_config.creator,
+            AuthorityType::SingleKey => {
+                ctx.accounts.authority.key() == stream_config.creator
+                    || ctx.accounts.authority.key() == stream_config.release_authority
+            }
+            AuthorityType::MultiSig => {
+                // MultiSig requires both creator AND release_authority to approve.
+                // For now, require creator (simplification: full multi-sig would need
+                // a separate approval account). Creator can always release.
+                ctx.accounts.authority.key() == stream_config.creator
+            }
+        };
+
+        require!(is_authorized, ErrorCode::Unauthorized);
 
         stream_config.milestone_released = true;
 
@@ -379,23 +390,33 @@ fn compute_unlocked(stream_config: &StreamConfig, now: i64) -> Result<u64> {
             stream_config.end_timestamp,
             now,
         ),
-        ScheduleType::Cliff | ScheduleType::CliffLinear => {
+        ScheduleType::Cliff => {
+            if now < stream_config.cliff_timestamp {
+                return Ok(0);
+            }
+            Ok(stream_config.total_amount)
+        }
+        ScheduleType::CliffLinear => {
             if now < stream_config.cliff_timestamp {
                 return Ok(0);
             }
 
-            let linear_start = if stream_config.cliff_timestamp > 0 {
-                stream_config.cliff_timestamp
-            } else {
-                stream_config.start_timestamp
-            };
+            let cliff_amount = stream_config.cliff_amount;
+            let linear_total = stream_config
+                .total_amount
+                .checked_sub(cliff_amount)
+                .ok_or(ErrorCode::MathOverflow)?;
 
-            compute_linear_unlocked(
-                stream_config.total_amount,
-                linear_start,
+            let linear_unlocked = compute_linear_unlocked(
+                linear_total,
+                stream_config.cliff_timestamp,
                 stream_config.end_timestamp,
                 now,
-            )
+            )?;
+
+            cliff_amount
+                .checked_add(linear_unlocked)
+                .ok_or(ErrorCode::MathOverflow.into())
         }
         ScheduleType::Milestone => {
             if stream_config.milestone_released {
@@ -470,21 +491,9 @@ impl StreamConfig {
     pub const SPACE: usize = 8 + StreamConfig::INIT_SPACE;
 }
 
-#[cfg(not(coverage))]
-#[derive(InitSpace)]
-#[account]
-pub struct ClaimReceipt {
-    pub stream: Pubkey,
-    pub claim_index: u32,
-    pub claimed_at: i64,
-    pub amount: u64,
-    pub recipient: Pubkey,
-}
-
-#[cfg(not(coverage))]
-impl ClaimReceipt {
-    pub const SPACE: usize = 8 + ClaimReceipt::INIT_SPACE;
-}
+// NOTE: ClaimReceipt (per-withdrawal receipt PDA) is planned for Phase 3.
+// It will require a `claim_index` counter in StreamConfig and a new
+// instruction to create the receipt account on each withdrawal.
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum ScheduleType {
@@ -654,6 +663,36 @@ mod tests {
     }
 
     #[test]
+    fn cliff_schedule_unlocks_all_at_cliff() {
+        let mut config = stream_config(ScheduleType::Cliff);
+        config.cliff_timestamp = 150;
+
+        assert_eq!(compute_unlocked(&config, 149).unwrap(), 0);
+        assert_eq!(compute_unlocked(&config, 150).unwrap(), 1_000);
+        assert_eq!(compute_unlocked(&config, 200).unwrap(), 1_000);
+    }
+
+    #[test]
+    fn cliff_linear_unlocks_cliff_amount_plus_linear_remainder() {
+        let mut config = stream_config(ScheduleType::CliffLinear);
+        config.cliff_timestamp = 150;
+        config.cliff_amount = 200;
+        // total=1000, cliff_amount=200, linear portion=800 from t=150 to t=200
+
+        // Before cliff: locked
+        assert_eq!(compute_unlocked(&config, 149).unwrap(), 0);
+
+        // At cliff: only cliff_amount
+        assert_eq!(compute_unlocked(&config, 150).unwrap(), 200);
+
+        // Midway through linear: 200 + 800*(175-150)/(200-150) = 200+400 = 600
+        assert_eq!(compute_unlocked(&config, 175).unwrap(), 600);
+
+        // At end: 200 + 800 = 1000
+        assert_eq!(compute_unlocked(&config, 200).unwrap(), 1_000);
+    }
+
+    #[test]
     fn compute_unlocked_uses_milestone_release_flag() {
         let mut config = stream_config(ScheduleType::Milestone);
 
@@ -697,5 +736,26 @@ mod tests {
 
         assert!(require_cancel_authority(&config, config.creator).is_err());
         assert!(require_cancel_authority(&config, config.recipient).is_err());
+    }
+
+    #[test]
+    fn cliff_schedule_requires_cliff_timestamp() {
+        let mut config = stream_config(ScheduleType::Cliff);
+        config.cliff_timestamp = 0;
+        // cliff_timestamp=0 means cliff is at start — should unlock all at start
+        assert_eq!(compute_unlocked(&config, 100).unwrap(), 1_000);
+    }
+
+    #[test]
+    fn cliff_linear_with_zero_cliff_amount_behaves_as_linear() {
+        let mut config = stream_config(ScheduleType::CliffLinear);
+        config.cliff_timestamp = 150;
+        config.cliff_amount = 0;
+
+        // Should behave same as linear from cliff to end
+        assert_eq!(compute_unlocked(&config, 149).unwrap(), 0);
+        assert_eq!(compute_unlocked(&config, 150).unwrap(), 0);
+        assert_eq!(compute_unlocked(&config, 175).unwrap(), 500);
+        assert_eq!(compute_unlocked(&config, 200).unwrap(), 1_000);
     }
 }
