@@ -110,6 +110,8 @@ const veloraIdl = {
     { code: 6010, name: "MathOverflow", msg: "Vesting math overflowed." },
     { code: 6011, name: "InvalidMint", msg: "Token account mint does not match the stream mint." },
     { code: 6012, name: "InvalidVault", msg: "Vault token account does not match the stream vault." },
+    { code: 6013, name: "CancellationDisabled", msg: "Cancellation is disabled for this stream." },
+    { code: 6014, name: "InvalidCliffAmount", msg: "Cliff amount cannot exceed the total stream amount." },
   ],
   types: [
     {
@@ -213,6 +215,7 @@ type StreamAccount = {
   startTimestamp: BN;
   endTimestamp: BN;
   cliffTimestamp: BN;
+  cliffAmount: BN;
   milestoneReleased: boolean;
   releaseAuthority: PublicKey;
   status: Record<string, unknown>;
@@ -248,9 +251,13 @@ export type CreateStreamInput = {
   startTimestamp: number;
   endTimestamp: number;
   cliffTimestamp: number;
+  cliffAmount: bigint;
   scheduleType: StreamView["scheduleType"];
+  authorityType: "None" | "SingleKey" | "MultiSig";
+  releaseAuthority: PublicKey | null;
   milestoneDescription: string;
   isCancellable: boolean;
+  cancelAuthority: "CreatorOnly" | "Either" | "Neither";
 };
 
 export type CreateStreamResult = {
@@ -308,6 +315,95 @@ function scheduleToAnchor(scheduleType: StreamView["scheduleType"]) {
   return { [key]: {} };
 }
 
+function authorityTypeToAnchor(authorityType: "None" | "SingleKey" | "MultiSig") {
+  const key = authorityType[0].toLowerCase() + authorityType.slice(1);
+  return { [key]: {} };
+}
+
+function cancelAuthorityToAnchor(cancelAuthority: "CreatorOnly" | "Either" | "Neither") {
+  const key = cancelAuthority[0].toLowerCase() + cancelAuthority.slice(1);
+  return { [key]: {} };
+}
+
+/** Translate raw SPL Token / Anchor program errors into human-readable messages. */
+const SPL_TOKEN_ERRORS: Record<number, string> = {
+  0x0: "Token account owner does not match the signer. Use \"Get test tokens\" to mint to your current wallet.",
+  0x1: "Insufficient token balance for this transaction.",
+  0x2: "Invalid token mint.",
+  0x3: "Token account is frozen.",
+  0x4: "Token account owner does not match the signer. Use \"Get test tokens\" to mint to your current wallet.",
+  0x5: "Token account is not initialized.",
+  0x6: "Token account is immutable — owner cannot be reassigned.",
+  0x7: "Token amount overflow.",
+  0x8: "Token account already exists.",
+  0x9: "Not enough tokens available.",
+  0xa: "Cannot transfer to the same account.",
+};
+
+const ANCHOR_ERRORS: Record<number, string> = {
+  6000: "Token amount must be greater than zero.",
+  6001: "Vesting end date must be after the start date.",
+  6002: "Recipient and creator cannot be the same wallet.",
+  6003: "This schedule type is not supported for this action.",
+  6004: "Signer is not authorized for this stream.",
+  6005: "Stream is not active.",
+  6006: "No unlocked tokens available to withdraw.",
+  6007: "Stream is already cancelled.",
+  6008: "Stream is already fully vested.",
+  6009: "Stream has expired.",
+  6010: "Vesting calculation overflowed.",
+  6011: "Token account mint does not match the stream mint.",
+  6012: "Vault token account does not match.",
+  6013: "Cancellation is disabled for this stream.",
+  6014: "Cliff amount cannot exceed the total stream amount.",
+};
+
+function parseProgramError(error: unknown): string | null {
+  // Build searchable text from every surface the error might expose.
+  const parts: string[] = [];
+  if (error instanceof Error) {
+    parts.push(error.message);
+    parts.push(error.toString());
+  }
+  // Anchor/SendTransactionError often stashes raw logs here.
+  const errorObj = error as Record<string, unknown>;
+  if (Array.isArray(errorObj.logs)) {
+    parts.push(errorObj.logs.join("\n"));
+  }
+  const haystack = parts.join("\n");
+
+  // Match "custom program error: 0xNNNN" (Anchor/SPL Token)
+  const hexMatch = haystack.match(/custom program error:\s*0x([0-9a-fA-F]+)/);
+  if (hexMatch) {
+    const code = parseInt(hexMatch[1], 16);
+    if (code >= 0x1770) {
+      const anchorCode = code - 0x1770;
+      return ANCHOR_ERRORS[anchorCode] ?? `Program error ${anchorCode}.`;
+    }
+    return SPL_TOKEN_ERRORS[code] ?? `Token program error 0x${code.toString(16)}.`;
+  }
+
+  // Match raw log lines: "Error: owner does not match"
+  if (/owner does not match/i.test(haystack)) {
+    return "Token account owner does not match the signer. Use \"Get test tokens\" to mint to your current wallet.";
+  }
+  if (/not enough|insufficient/i.test(haystack)) {
+    return "Insufficient token balance for this transaction.";
+  }
+
+  return null;
+}
+
+/** Wrap any async operation to throw human-readable errors. */
+function humanizeError<T>(promise: Promise<T>): Promise<T> {
+  return promise.catch((error) => {
+    console.debug("[humanizeError] raw error:", error);
+    const human = parseProgramError(error);
+    if (human) throw new Error(human);
+    throw error;
+  });
+}
+
 function descriptionToBytes(value: string) {
   const bytes = new TextEncoder().encode(value);
   return Array.from({ length: 128 }, (_, index) => bytes[index] ?? 0);
@@ -337,16 +433,27 @@ function computeUnlocked(stream: StreamAccount) {
   const start = Number(stream.startTimestamp.toString());
   const end = Number(stream.endTimestamp.toString());
   const cliff = Number(stream.cliffTimestamp.toString());
+  const cliffAmount = decodeAmount(stream.cliffAmount);
   const schedule = enumName(stream.scheduleType, "Linear");
   let unlocked = BigInt(0);
 
   if (schedule === "Milestone") {
     unlocked = stream.milestoneReleased ? total : BigInt(0);
+  } else if (schedule === "Cliff") {
+    unlocked = now < cliff ? BigInt(0) : total;
+  } else if (schedule === "CliffLinear") {
+    if (now < cliff) {
+      unlocked = BigInt(0);
+    } else {
+      const linearTotal = total - cliffAmount;
+      const linearUnlocked = now >= end ? linearTotal : (linearTotal * BigInt(now - cliff)) / BigInt(end - cliff);
+      unlocked = cliffAmount + linearUnlocked;
+    }
   } else {
-    const linearStart = schedule === "Cliff" || schedule === "CliffLinear" ? cliff : start;
-    if (now <= linearStart) unlocked = BigInt(0);
+    // Linear
+    if (now <= start) unlocked = BigInt(0);
     else if (now >= end) unlocked = total;
-    else unlocked = (total * BigInt(now - linearStart)) / BigInt(end - linearStart);
+    else unlocked = (total * BigInt(now - start)) / BigInt(end - start);
   }
 
   return unlocked;
@@ -483,12 +590,17 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const ensureConnected = useCallback(async () => {
-    if (!program || !walletPublicKey) {
+    let currentProgram = program;
+    let currentWallet = walletPublicKey;
+
+    if (!currentProgram || !currentWallet) {
       await connect();
+      // Re-read from Phantom directly to avoid stale closure after async connect
+      const walletProvider = getPhantom();
+      if (!walletProvider?.publicKey) throw new Error("Connect your wallet first.");
+      currentWallet = walletProvider.publicKey;
+      if (!currentProgram) throw new Error("Program not initialized. Try refreshing.");
     }
-    const currentProgram = program;
-    const currentWallet = walletPublicKey;
-    if (!currentProgram || !currentWallet) throw new Error("Connect your wallet first.");
     return { currentProgram, currentWallet };
   }, [connect, program, walletPublicKey]);
 
@@ -530,8 +642,19 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
       const vault = deriveVault(streamConfig);
       const creatorTokenAccount = getAssociatedTokenAddressSync(input.mint, currentWallet, true);
       const creatorTokenAccountInfo = await connection.getAccountInfo(creatorTokenAccount, "confirmed");
+
       if (!creatorTokenAccountInfo) {
         throw new Error("The connected wallet does not have a token account for this mint yet.");
+      }
+      // Early detection of owner mismatch (the root cause of SPL Token 0x4)
+      {
+        const onChainOwner = new PublicKey(creatorTokenAccountInfo.data.slice(32, 64));
+        if (!onChainOwner.equals(currentWallet)) {
+          throw new Error(
+            `Token account owner mismatch. Account ${creatorTokenAccount.toBase58()} is owned by ${onChainOwner.toBase58()} but your wallet is ${currentWallet.toBase58()}. ` +
+            `This happens when faucet tokens were sent to a different wallet. Disconnect and reconnect the correct wallet, then try again.`
+          );
+        }
       }
       const creatorBalance = await connection.getTokenAccountBalance(creatorTokenAccount, "confirmed");
       if (BigInt(creatorBalance.value.amount) < input.totalAmount) {
@@ -539,20 +662,20 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
       }
       await ensureAssociatedTokenAccount(input.recipient, input.mint);
 
-      const signature = await currentProgram.methods
+      const signature = await humanizeError(currentProgram.methods
         .createStream({
           streamId: new BN(input.streamId.toString()),
           totalAmount: new BN(input.totalAmount.toString()),
           startTimestamp: new BN(input.startTimestamp),
           endTimestamp: new BN(input.endTimestamp),
           cliffTimestamp: new BN(input.cliffTimestamp),
-          cliffAmount: new BN(0),
+          cliffAmount: new BN(input.cliffAmount.toString()),
           scheduleType: scheduleToAnchor(input.scheduleType),
-          authorityType: { none: {} },
-          releaseAuthority: input.scheduleType === "Milestone" ? currentWallet : null,
+          authorityType: authorityTypeToAnchor(input.authorityType),
+          releaseAuthority: input.releaseAuthority ?? null,
           milestoneDescription: descriptionToBytes(input.milestoneDescription),
           isCancellable: input.isCancellable,
-          cancelAuthority: { creatorOnly: {} },
+          cancelAuthority: cancelAuthorityToAnchor(input.cancelAuthority),
         })
         .accounts({
           creator: currentWallet,
@@ -565,7 +688,7 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
         })
-        .rpc();
+        .rpc());
 
       await refresh();
       return {
@@ -583,7 +706,7 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
     async (stream: StreamView) => {
       const { currentProgram, currentWallet } = await ensureConnected();
       const recipientTokenAccount = await ensureAssociatedTokenAccount(currentWallet, stream.mint);
-      const signature = await currentProgram.methods
+      const signature = await humanizeError(currentProgram.methods
         .withdraw()
         .accounts({
           recipient: currentWallet,
@@ -592,7 +715,7 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
           recipientTokenAccount,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
-        .rpc();
+        .rpc());
       await refresh();
       return signature;
     },
@@ -604,7 +727,7 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
       const { currentProgram, currentWallet } = await ensureConnected();
       const recipientTokenAccount = getAssociatedTokenAddressSync(stream.mint, stream.recipient, true);
       const creatorTokenAccount = await ensureAssociatedTokenAccount(currentWallet, stream.mint);
-      const signature = await currentProgram.methods
+      const signature = await humanizeError(currentProgram.methods
         .cancel()
         .accounts({
           authority: currentWallet,
@@ -614,7 +737,7 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
           creatorTokenAccount,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
-        .rpc();
+        .rpc());
       await refresh();
       return signature;
     },
@@ -624,10 +747,10 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
   const releaseMilestone = useCallback(
     async (stream: StreamView) => {
       const { currentProgram, currentWallet } = await ensureConnected();
-      const signature = await currentProgram.methods
+      const signature = await humanizeError(currentProgram.methods
         .releaseMilestone()
         .accounts({ authority: currentWallet, streamConfig: stream.publicKey })
-        .rpc();
+        .rpc());
       await refresh();
       return signature;
     },
@@ -704,6 +827,18 @@ export function parseRawAmount(value: string) {
   const amount = BigInt(trimmed);
   if (amount <= BigInt(0)) throw new Error("Amount must be greater than zero.");
   return amount;
+}
+
+/**
+ * Parse a raw token amount that is allowed to be zero (e.g. cliff lump-sum).
+ * A zero cliff amount is valid — a CliffLinear stream with cliffAmount=0 simply
+ * vests linearly from the cliff. The strict {@link parseRawAmount} rejects zero,
+ * so it must not be used for these optional amount fields.
+ */
+export function parseRawAmountAllowZero(value: string) {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed)) throw new Error("Amount must be a whole raw token-unit number.");
+  return BigInt(trimmed);
 }
 
 export { PROGRAM_ID, ZERO_PUBKEY };
