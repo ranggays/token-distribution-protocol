@@ -590,7 +590,7 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const ensureConnected = useCallback(async () => {
-    let currentProgram = program;
+    const currentProgram = program;
     let currentWallet = walletPublicKey;
 
     if (!currentProgram || !currentWallet) {
@@ -716,7 +716,20 @@ export function VeloraChainProvider({ children }: { children: ReactNode }) {
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .rpc());
-      await refresh();
+      setStreams((current) =>
+        current.map((item) => {
+          if (!item.publicKey.equals(stream.publicKey)) return item;
+          const nextClaimed = item.amountClaimed + item.claimableAmount;
+          const cappedClaimed = nextClaimed > item.totalAmount ? item.totalAmount : nextClaimed;
+          return {
+            ...item,
+            amountClaimed: cappedClaimed,
+            claimableAmount: BigInt(0),
+            status: cappedClaimed >= item.totalAmount ? "Completed" : item.status,
+          };
+        }),
+      );
+      window.setTimeout(() => void refresh(), 1200);
       return signature;
     },
     [ensureAssociatedTokenAccount, ensureConnected, refresh],
