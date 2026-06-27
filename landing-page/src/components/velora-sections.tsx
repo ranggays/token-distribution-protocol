@@ -267,7 +267,7 @@ export function VeloraFooter() {
           <p>Resources</p>
           <Link
             className="magnet-effect"
-            href="/docs"
+            href="https://velora-1.gitbook.io/docs/"
           >
             docs
           </Link>

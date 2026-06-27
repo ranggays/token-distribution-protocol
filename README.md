@@ -20,13 +20,17 @@ Streams are cancellable or non-cancellable at creation time, and the cancel auth
 ```
 token-distribution-protocol/
 ├── backend/                    Anchor workspace (Rust program + TS tests)
-│   ├── programs/backend/src/   Program source
-│   ├── tests/                  Anchor integration tests
+│   ├── programs/backend/src/   Program source (~700 lines, single file)
+│   ├── tests/                  Anchor integration tests (23 cases)
 │   ├── Anchor.toml             Workspace config
 │   └── README.md               Full setup and deploy guide
+├── landing-page/               Next.js frontend ("Velora")
+│   ├── src/app/                App Router pages (dashboard, claim, create-vesting)
+│   ├── src/components/         UI components (Velora-branded)
+│   └── src/lib/                Chain interaction helpers (velora-chain.tsx)
 ├── docs/
 │   └── architecture.md         PDA design, token flow, authority model
-└── .github/workflows/ci.yml    CI pipeline
+└── .github/workflows/ci.yml    CI pipeline (backend only)
 ```
 
 ## Quick Start
@@ -35,7 +39,7 @@ token-distribution-protocol/
 
 | Tool | Version |
 |---|---|
-| Rust | 1.89.0 (via `rustup`) |
+| Rust | 1.91.0 (via `rustup`) |
 | Solana CLI | stable |
 | Anchor CLI | 0.32.1 (via `avm`) |
 | Node.js | 18+ |
@@ -88,12 +92,17 @@ See [`docs/architecture.md`](docs/architecture.md) for the PDA derivation scheme
 | 1 | Research & architecture design | Done |
 | 2 | Account struct definitions | Done |
 | 3 | Anchor scaffold + CI | Done |
-| 4 | Instruction logic (create, withdraw, cancel) | Upcoming |
-| 5+ | Frontend, devnet deploy, audit | Upcoming |
+| 4 | Instruction logic (create, withdraw, cancel) | Done |
+| 5 | Frontend + devnet deploy | Done |
+| 6 | Vesting math + security tests | Done |
+| 7 | Analytics + landing page polish | Done |
+| 8 | Bug fixes, status report, Phase 3 prep | Done |
+
+See [`docs/architecture.md`](docs/architecture.md) for known limitations and Phase 3 roadmap.
 
 ## Team
 
 **Team 5 — Mancer × Superteam Indonesia Career Accelerator S1**
 
-- Rangga — primary implementation
-- Axel — smart contract internals and backend architecture
+- Rangga — primary implementation, frontend, devnet deployment
+- Axel — smart contract internals, backend architecture, security

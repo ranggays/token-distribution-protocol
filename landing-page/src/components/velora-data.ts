@@ -8,7 +8,7 @@ import type {
 export const navItems: NavItem[] = [
   {
     label: "Docs",
-    href: "/docs",
+    href: "https://velora-1.gitbook.io/docs/",
   },
   { label: "Open App", href: "/app", cta: true },
 ];

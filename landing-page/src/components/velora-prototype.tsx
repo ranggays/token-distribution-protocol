@@ -59,6 +59,7 @@ import {
   formatTokenAmount,
   parsePublicKey,
   parseRawAmount,
+  parseRawAmountAllowZero,
   useVeloraChain,
   type CreateStreamInput,
   type StreamView,
@@ -173,6 +174,7 @@ const sidebarCollapsedEvent = "velora-sidebar-collapsed";
 type SelectOption = {
   label: string;
   value: string;
+  disabled?: boolean;
 };
 
 const unlockScheduleOptions: SelectOption[] = [
@@ -186,6 +188,18 @@ const recipientChangeOptions: SelectOption[] = [
   { label: "Only Sender", value: "Only Sender" },
   { label: "Only Recipient", value: "Only Recipient" },
   { label: "Both Sender and Recipient", value: "Both Sender and Recipient" },
+];
+
+const authorityTypeOptions: SelectOption[] = [
+  { label: "None", value: "None" },
+  { label: "Single key", value: "SingleKey" },
+  { label: "MultiSig (coming later)", value: "MultiSig", disabled: true },
+];
+
+const cancelAuthorityOptions: SelectOption[] = [
+  { label: "Creator only", value: "CreatorOnly" },
+  { label: "Creator or recipient", value: "Either" },
+  { label: "Neither", value: "Neither" },
 ];
 
 const veloraDevnetMint = "2izHDnU4RsQRDMpHTTrsjCwbzS3XDXBRStqtWosfVf6j";
@@ -211,6 +225,10 @@ type VestingDraft = {
   cliffDelayDays: number;
   milestoneDescription: string;
   cancellable: boolean;
+  cliffAmount: string;
+  authorityType: "None" | "SingleKey" | "MultiSig";
+  releaseAuthorityWallet: string;
+  cancelAuthority: "CreatorOnly" | "Either" | "Neither";
 };
 
 type TransactionStage = "idle" | "wallet_approval" | "sending" | "confirming" | "success" | "error";
@@ -249,6 +267,10 @@ const defaultVestingDraft: VestingDraft = {
   cliffDelayDays: 30,
   milestoneDescription: "",
   cancellable: true,
+  cliffAmount: "0",
+  authorityType: "None",
+  releaseAuthorityWallet: "",
+  cancelAuthority: "CreatorOnly",
 };
 
 function dateToLocalInputValue(date: Date) {
@@ -392,7 +414,26 @@ function streamTitle(stream: StreamView, metadata: VestingMetadataMap) {
 }
 
 function scheduleLabel(scheduleType: StreamView["scheduleType"]) {
-  return scheduleType === "CliffLinear" ? "Cliff" : scheduleType;
+  return scheduleType === "CliffLinear" ? "Hybrid" : scheduleType;
+}
+
+function hasCliffDate(scheduleType: StreamView["scheduleType"]) {
+  return scheduleType === "Cliff" || scheduleType === "CliffLinear";
+}
+
+function scheduleDescription(draft: VestingDraft) {
+  if (draft.scheduleType === "Cliff") return "All tokens unlock at the cliff date.";
+  if (draft.scheduleType === "CliffLinear") return `${draft.cliffAmount || "0"} tokens unlock at the cliff, then the rest vests linearly.`;
+  if (draft.scheduleType === "Milestone") return "Tokens unlock after manual milestone release.";
+  return "Tokens vest linearly from start to end.";
+}
+
+function claimActionLabel(stream: StreamView, isBusy: boolean) {
+  if (isBusy) return "Claiming...";
+  if (stream.status !== "Active") return streamStatusLabel(stream);
+  if (stream.amountClaimed >= stream.totalAmount) return "Completed";
+  if (stream.claimableAmount === BigInt(0)) return "No claim";
+  return "Claim";
 }
 
 function streamStatusLabel(stream: StreamView) {
@@ -567,21 +608,42 @@ function getBalanceIssue(balanceState: TokenBalanceState, requiredAmount: bigint
 }
 
 function getScheduleIssue(draft: VestingDraft) {
-  if (!draft.endDateTime) return "Choose a vesting end date.";
+  if (!draft.endDateTime) return draft.scheduleType === "Milestone" ? "Choose a milestone release deadline." : "Choose a vesting end date.";
 
-  if (!draft.startsImmediately && !draft.startDateTime) return "Choose a vesting start date.";
+  if (draft.scheduleType !== "Milestone" && !draft.startsImmediately && !draft.startDateTime) return "Choose a vesting start date.";
 
-  const startTimestamp = draft.startsImmediately ? Math.floor(Date.now() / 1000) : Math.floor(new Date(draft.startDateTime).getTime() / 1000);
+  const startTimestamp = draft.scheduleType === "Milestone" || draft.startsImmediately ? Math.floor(Date.now() / 1000) : Math.floor(new Date(draft.startDateTime).getTime() / 1000);
   const endTimestamp = Math.floor(new Date(draft.endDateTime).getTime() / 1000);
   if (!Number.isFinite(startTimestamp) || !Number.isFinite(endTimestamp)) return "Choose valid vesting dates.";
-  if (endTimestamp <= startTimestamp) return "Vesting end date must be after the start date.";
+  if (endTimestamp <= startTimestamp) return draft.scheduleType === "Milestone" ? "Release deadline must be in the future." : "Vesting end date must be after the start date.";
 
-  if (draft.scheduleType === "CliffLinear") {
+  if (hasCliffDate(draft.scheduleType)) {
     if (!draft.cliffDateTime) return "Choose a cliff date.";
     const cliffTimestamp = Math.floor(new Date(draft.cliffDateTime).getTime() / 1000);
     if (!Number.isFinite(cliffTimestamp)) return "Choose a valid cliff date.";
     if (cliffTimestamp <= startTimestamp || cliffTimestamp >= endTimestamp) {
       return "Cliff date must be after the start date and before the end date.";
+    }
+  }
+
+  if (draft.scheduleType === "CliffLinear") {
+    try {
+      const cliffAmount = parseRawAmountAllowZero(draft.cliffAmount);
+      const totalAmount = parseRawAmount(draft.amount);
+      if (cliffAmount > totalAmount) return "Hybrid cliff amount must be less than or equal to the total amount.";
+    } catch {
+      return "Enter a valid whole-number hybrid cliff amount.";
+    }
+  }
+
+  if (draft.scheduleType === "Milestone" && draft.authorityType === "MultiSig") return "MultiSig release authority is coming later.";
+
+  if (draft.scheduleType === "Milestone" && draft.authorityType === "SingleKey") {
+    if (!draft.releaseAuthorityWallet.trim()) return "Enter the release authority wallet.";
+    try {
+      parsePublicKey(draft.releaseAuthorityWallet, "Release authority wallet");
+    } catch (error) {
+      return error instanceof Error ? error.message : "Enter a valid release authority wallet.";
     }
   }
 
@@ -593,7 +655,8 @@ function BalanceNotice({ state, issue }: { state: TokenBalanceResult; issue?: st
   const [faucetStatus, setFaucetStatus] = useState<"idle" | "minting" | "success" | "error">("idle");
   const [faucetMessage, setFaucetMessage] = useState<string | null>(null);
   const hasIssue = Boolean(issue) || state.status === "missing" || state.status === "invalid" || state.status === "error";
-  const showFaucetAction = walletPublicKey && (state.status === "missing" || issue === "Insufficient token balance for this amount.");
+  const hasZeroBalance = state.status === "ready" && state.balance && state.balance.amount === BigInt(0);
+  const showFaucetAction = walletPublicKey && (state.status === "missing" || hasZeroBalance || issue === "Insufficient token balance for this amount.");
 
   const requestTestTokens = async () => {
     if (!walletPublicKey) return;
@@ -1905,9 +1968,9 @@ function VestingTable({ streams }: { streams: StreamView[] }) {
             <th className="px-3 py-4" />
           </tr>
         </thead>
-	        <tbody>
-	          {streams.map((stream) => (
-	            <tr className="cursor-pointer border-t border-[#fffeea]/12 transition hover:bg-[#13151a]" key={stream.publicKey.toBase58()} onClick={() => (window.location.href = `/contract/solana/devnet/${stream.publicKey.toBase58()}`)}>
+          <tbody>
+            {streams.map((stream) => (
+              <tr className="cursor-pointer border-t border-[#fffeea]/12 transition hover:bg-[#13151a]" key={stream.publicKey.toBase58()} onClick={() => (window.location.href = `/contract/solana/devnet/${stream.publicKey.toBase58()}`)}>
               <td className="px-3 py-5">
                 <div className="flex items-center gap-3">
                   <TokenIcon />
@@ -2132,7 +2195,7 @@ function ClaimMobileCard({
 }) {
   const isBusy = busyStream === stream.publicKey.toBase58();
   const canClaim = stream.status === "Active" && stream.claimableAmount > BigInt(0);
-  const claimLabel = stream.status !== "Active" ? streamStatusLabel(stream) : isBusy ? "Claiming..." : "Claim";
+  const claimLabel = claimActionLabel(stream, isBusy);
   const recipientAddress = stream.recipient.toBase58();
 
   return (
@@ -2194,13 +2257,13 @@ function ClaimTableRow({
 }) {
   const isBusy = busyStream === stream.publicKey.toBase58();
   const canClaim = stream.status === "Active" && stream.claimableAmount > BigInt(0);
-  const claimLabel = stream.status !== "Active" ? streamStatusLabel(stream) : isBusy ? "Claiming..." : "Claim";
+  const claimLabel = claimActionLabel(stream, isBusy);
 
   return (
     <tr className="transition hover:bg-[#13151a]">
-	      <td className="px-3 py-5">
-	        <div className="flex items-center gap-3">
-	          <TokenIcon />
+        <td className="px-3 py-5">
+          <div className="flex items-center gap-3">
+            <TokenIcon />
           <div>
             <div className="font-semibold text-white">{formatTokenAmount(stream.claimableAmount)}</div>
             <div className="mt-1 text-xs text-[#fffeea]/50">
@@ -2277,10 +2340,16 @@ export function TypePage() {
       icon: <CalendarDays className="text-[#f2d467]" size={44} />,
     },
     {
-      scheduleType: "CliffLinear",
+      scheduleType: "Cliff",
       title: "Cliff",
-      text: "Locks tokens until a cliff date, then begins linear vesting.",
+      text: "Locks tokens until the cliff date, then unlocks the full allocation at once.",
       icon: <Lock className="text-[#f2d467]" size={44} />,
+    },
+    {
+      scheduleType: "CliffLinear",
+      title: "Hybrid",
+      text: "Unlocks part at the cliff, then vests the remaining tokens linearly.",
+      icon: <Hourglass className="text-[#f2d467]" size={44} />,
     },
     {
       scheduleType: "Milestone",
@@ -2300,46 +2369,47 @@ export function TypePage() {
         </>
       }
     >
-      <section className="mx-auto flex w-full max-w-[802px] flex-col items-center px-4 py-10 md:min-h-[760px] md:justify-center md:px-0">
+      <section className="mx-auto flex w-full max-w-[1060px] flex-col items-center px-4 py-10 md:min-h-[760px] md:justify-center md:px-0">
         <h1 className="text-3xl font-semibold tracking-[-0.03em] md:text-4xl">Choose type</h1>
         <p className="mt-3 text-center text-base text-[#fffeea]/62 md:mt-4 md:text-2xl">Choose the vesting type you would like to create.</p>
-        <div className="mt-8 grid w-full grid-cols-1 gap-4 md:mt-12 md:grid-cols-3 md:gap-7">
+        <div className="mt-8 grid w-full grid-cols-1 gap-4 sm:grid-cols-2 md:mt-12 lg:grid-cols-4 lg:gap-6">
           {options.map((option) => {
             const selected = draft.scheduleType === option.scheduleType;
             return (
-            <button
-              aria-pressed={selected}
-              className="group text-left"
-              key={option.scheduleType}
+              <button
+                aria-pressed={selected}
+                className="group text-left"
+                key={option.scheduleType}
                 onClick={() =>
                   setDraft({
                     scheduleType: option.scheduleType,
-                    cliffEnabled: option.scheduleType === "CliffLinear",
-                    cliffDateTime: option.scheduleType === "CliffLinear" ? draft.cliffDateTime || defaultCliffDateTime(draft) : draft.cliffDateTime,
+                    cliffEnabled: hasCliffDate(option.scheduleType),
+                    cliffDateTime: hasCliffDate(option.scheduleType) ? draft.cliffDateTime || defaultCliffDateTime(draft) : "",
+                    startsImmediately: option.scheduleType === "Milestone" ? true : draft.startsImmediately,
                   })
                 }
-              type="button"
-            >
-              <FieldCard
-                className={`relative h-full p-5 transition md:p-8 ${
-                  selected
-                    ? "border-[#f2d467] bg-[#17150f] shadow-[0_0_0_1px_rgba(242,212,103,0.65),0_18px_60px_rgba(0,0,0,0.24)]"
-                    : "hover:border-[#fffeea]/35 hover:bg-[#111318]"
-                }`}
+                type="button"
               >
-                <span
-                  className={`absolute right-4 top-4 grid size-7 place-items-center rounded-full border text-xs transition ${
-                    selected ? "border-[#f2d467] bg-[#f2d467] text-[#06070a]" : "border-[#fffeea]/18 text-transparent group-hover:border-[#fffeea]/35"
+                <FieldCard
+                  className={`relative h-full p-5 transition md:p-8 ${
+                    selected
+                      ? "border-[#f2d467] bg-[#17150f] shadow-[0_0_0_1px_rgba(242,212,103,0.65),0_18px_60px_rgba(0,0,0,0.24)]"
+                      : "hover:border-[#fffeea]/35 hover:bg-[#111318]"
                   }`}
                 >
-                  <Check size={15} />
-                </span>
-                <span className={`block transition ${selected ? "scale-105" : ""}`}>{option.icon}</span>
-                <h2 className="mt-8 text-lg font-semibold md:mt-14">{option.title}</h2>
-                <p className="mt-3 text-base leading-6 text-[#fffeea]/62">{option.text}</p>
-                {selected ? <p className="mt-6 text-sm font-semibold text-[#f2d467]">Selected</p> : null}
-              </FieldCard>
-            </button>
+                  <span
+                    className={`absolute right-4 top-4 grid size-7 place-items-center rounded-full border text-xs transition ${
+                      selected ? "border-[#f2d467] bg-[#f2d467] text-[#06070a]" : "border-[#fffeea]/18 text-transparent group-hover:border-[#fffeea]/35"
+                    }`}
+                  >
+                    <Check size={15} />
+                  </span>
+                  <span className={`block transition ${selected ? "scale-105" : ""}`}>{option.icon}</span>
+                  <h2 className="mt-8 text-lg font-semibold md:mt-14">{option.title}</h2>
+                  <p className="mt-3 text-base leading-6 text-[#fffeea]/62">{option.text}</p>
+                  {selected ? <p className="mt-6 text-sm font-semibold text-[#f2d467]">Selected</p> : null}
+                </FieldCard>
+              </button>
             );
           })}
         </div>
@@ -2367,10 +2437,10 @@ function SelectBox({
   return (
     <div className="relative">
       {label ? (
-        <label className="text-sm font-semibold text-white">
-          {label}
-        {required ? <span className="text-[#f2d467]">*</span> : null}
-        </label>
+          <label className="text-sm font-semibold text-white">
+            {label}
+            {required ? <span className="text-[#f2d467]">*</span> : null}
+          </label>
       ) : null}
       <button
         aria-expanded={open}
@@ -2383,14 +2453,20 @@ function SelectBox({
       </button>
       {open ? (
         <div className="absolute left-0 right-0 top-full z-30 mt-2 overflow-hidden rounded-[4px] border border-[#fffeea]/16 bg-[#13151a] py-1 shadow-2xl shadow-black/40">
-          {options.map((option) => (
-            <button
-              className={`block w-full px-4 py-2.5 text-left text-sm transition hover:bg-[#191b22] ${option.value === value ? "text-[#fffeea]" : "text-[#fffeea]/62"}`}
-              key={option.value}
-              onClick={() => {
-                onChange(option.value);
-                setOpen(false);
-              }}
+            {options.map((option) => (
+              <button
+                className={`block w-full px-4 py-2.5 text-left text-sm transition ${
+                  option.disabled
+                    ? "cursor-not-allowed text-[#fffeea]/32"
+                    : `hover:bg-[#191b22] ${option.value === value ? "text-[#fffeea]" : "text-[#fffeea]/62"}`
+                }`}
+                disabled={option.disabled}
+                key={option.value}
+                onClick={() => {
+                  if (option.disabled) return;
+                  onChange(option.value);
+                  setOpen(false);
+                }}
               type="button"
             >
               {option.label}
@@ -2412,9 +2488,11 @@ export function ConfigurationPage() {
   const dateSummary = `${formatDraftDate(draft.startDateTime)} - ${formatDraftDate(draft.endDateTime)}`;
   const scheduleIssue = hydrated ? getScheduleIssue(draft) : null;
   const canContinue = hydrated && tokenBalance.status === "ready" && !scheduleIssue;
+  const isMilestone = draft.scheduleType === "Milestone";
+  const isCancelable = draft.cancelAuthority !== "Neither" && draft.cancellable;
   const permissionSummary = [
-    draft.cancellable ? "Cancellable" : "Non-cancellable",
-    draft.scheduleType === "Milestone" ? "Milestone release" : `${scheduleLabel(draft.scheduleType)} schedule`,
+    isCancelable ? "Cancellable" : "Non-cancellable",
+    isMilestone ? "Milestone release" : `${scheduleLabel(draft.scheduleType)} schedule`,
   ];
 
   return (
@@ -2470,38 +2548,42 @@ export function ConfigurationPage() {
                     <BalanceNotice state={tokenBalance} />
                   </div>
                 </div>
-                {draft.scheduleType === "Milestone" ? (
-                  <div>
-                    <label className="text-sm font-semibold text-white">Unlock schedule</label>
-                    <FieldCard className="mt-2 flex h-12 items-center px-4 text-sm text-[#fffeea]/78">Manual milestone release</FieldCard>
-                  </div>
-                ) : (
-                  <SelectBox label="Unlock schedule" onChange={setUnlockSchedule} options={unlockScheduleOptions} value={unlockSchedule} required />
-                )}
-                <SelectBox label="Who can change the recipient?" onChange={setRecipientChange} options={recipientChangeOptions} value={recipientChange} />
+                  {isMilestone ? (
+                    <div>
+                      <label className="text-sm font-semibold text-white">Unlock schedule</label>
+                      <FieldCard className="mt-2 flex h-12 items-center px-4 text-sm text-[#fffeea]/78">Manual milestone release</FieldCard>
+                    </div>
+                  ) : (
+                    <SelectBox label="Unlock schedule" onChange={setUnlockSchedule} options={unlockScheduleOptions} value={unlockSchedule} required />
+                  )}
+                  <SelectBox label="Who can change the recipient?" onChange={setRecipientChange} options={recipientChangeOptions} value={recipientChange} />
               </div>
             </section>
 
             <section className="grid gap-5 md:grid-cols-2">
               <div>
-                <h2 className="text-sm font-semibold text-[#fffeea]/78">Vesting start date</h2>
-                <FieldCard className="mt-2 flex min-h-[168px] flex-col gap-4 p-4">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-sm font-semibold">{draft.startsImmediately ? "Upon contract creation" : "Schedule manually"}</div>
-                      <div className="mt-1 text-xs text-[#fffeea]/50">
-                        {draft.startsImmediately ? "The unlock period begins when the stream is created." : "The stream waits until the selected start date."}
+                  <h2 className="text-sm font-semibold text-[#fffeea]/78">{isMilestone ? "Milestone release deadline" : "Vesting start date"}</h2>
+                  <FieldCard className="mt-2 flex min-h-[168px] flex-col gap-4 p-4">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-semibold">{isMilestone ? "Release before deadline" : draft.startsImmediately ? "Upon contract creation" : "Schedule manually"}</div>
+                        <div className="mt-1 text-xs text-[#fffeea]/50">
+                          {isMilestone
+                            ? "The milestone must be released on-chain before the deadline expires."
+                            : draft.startsImmediately
+                              ? "The unlock period begins when the stream is created."
+                              : "The stream waits until the selected start date."}
+                        </div>
                       </div>
+                      {isMilestone ? null : <Toggle enabled={draft.startsImmediately} label="Toggle immediate start" onChange={(enabled) => setDraft({ startsImmediately: enabled })} />}
                     </div>
-                    <Toggle enabled={draft.startsImmediately} label="Toggle immediate start" onChange={(enabled) => setDraft({ startsImmediately: enabled })} />
-                  </div>
-                  {!draft.startsImmediately ? (
-                    <DateTimeInput label="Start date*" onChange={(value) => setDraft({ startDateTime: value })} value={draft.startDateTime} />
-                  ) : null}
-                  <DateTimeInput label="End date*" onChange={(value) => setDraft({ endDateTime: value })} value={draft.endDateTime} />
-                </FieldCard>
-              </div>
-              {draft.scheduleType === "Milestone" ? (
+                    {!isMilestone && !draft.startsImmediately ? (
+                      <DateTimeInput label="Start date*" onChange={(value) => setDraft({ startDateTime: value })} value={draft.startDateTime} />
+                    ) : null}
+                    <DateTimeInput label={isMilestone ? "Release deadline*" : "End date*"} onChange={(value) => setDraft({ endDateTime: value })} value={draft.endDateTime} />
+                  </FieldCard>
+                </div>
+                {isMilestone ? (
                 <div>
                   <h2 className="text-sm font-semibold text-[#fffeea]/78">Milestone release</h2>
                   <FieldCard className="mt-2 flex min-h-[168px] flex-col justify-between gap-4 p-4">
@@ -2527,79 +2609,119 @@ export function ConfigurationPage() {
                     </label>
                   </FieldCard>
                 </div>
-              ) : (
-                <div>
-                  <h2 className="text-sm font-semibold text-[#fffeea]/78">Cliff configuration</h2>
-                  <FieldCard className="mt-2 flex min-h-[168px] flex-col justify-between gap-4 p-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-semibold">{draft.cliffEnabled || draft.scheduleType === "CliffLinear" ? "Cliff enabled" : "No cliff"}</div>
-                        <div className="mt-1 text-xs leading-5 text-[#fffeea]/50">
-                          {draft.cliffEnabled || draft.scheduleType === "CliffLinear" ? "Tokens stay locked until the cliff delay passes." : "Linear vesting starts immediately."}
+                ) : (
+                  <div>
+                    <h2 className="text-sm font-semibold text-[#fffeea]/78">Cliff configuration</h2>
+                    <FieldCard className="mt-2 flex min-h-[168px] flex-col justify-between gap-4 p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold">{hasCliffDate(draft.scheduleType) ? `${scheduleLabel(draft.scheduleType)} cliff` : "No cliff"}</div>
+                          <div className="mt-1 text-xs leading-5 text-[#fffeea]/50">
+                            {draft.scheduleType === "Cliff"
+                              ? "Tokens stay locked until the cliff date, then unlock all at once."
+                              : draft.scheduleType === "CliffLinear"
+                                ? "Tokens stay locked until the cliff date, then part unlocks before linear vesting continues."
+                                : "Linear vesting starts immediately."}
+                          </div>
                         </div>
-                      </div>
-                      <Toggle
-                        enabled={draft.cliffEnabled || draft.scheduleType === "CliffLinear"}
-                        label="Toggle cliff"
-                        onChange={(enabled) =>
-                          setDraft({
-                            cliffEnabled: enabled,
-                            scheduleType: enabled ? "CliffLinear" : "Linear",
-                            cliffDateTime: enabled ? draft.cliffDateTime || defaultCliffDateTime(draft) : "",
-                          })
-                        }
-                      />
-                    </div>
-                    {draft.cliffEnabled || draft.scheduleType === "CliffLinear" ? (
-                      <label className="block">
-                        <span className="text-xs font-medium text-[#fffeea]/48">Cliff date</span>
-                        <span className="mt-2 flex h-12 items-center rounded-[4px] border border-[#fffeea]/14 bg-[#06070a] px-4 focus-within:border-[#f2d467]">
-                          <input
-                            className="min-w-0 flex-1 bg-transparent text-sm text-[#fffeea] outline-none [color-scheme:dark]"
-                            onChange={(event) => setDraft({ cliffDateTime: event.target.value })}
-                            type="datetime-local"
-                            value={draft.cliffDateTime}
-                          />
+                        <span className="shrink-0 rounded-[4px] border border-[#fffeea]/14 bg-[#111318] px-3 py-1.5 text-xs font-semibold text-[#fffeea]/70">
+                          {scheduleLabel(draft.scheduleType)}
                         </span>
-                        <span className="mt-2 block text-xs leading-5 text-[#fffeea]/45">
-                          Cliff must be after the start date and before the end date.
-                        </span>
-                      </label>
-                    ) : (
-                      <div className="rounded-[4px] border border-dashed border-[#fffeea]/12 bg-[#06070a] px-4 py-3 text-xs text-[#fffeea]/45">
-                        Enable cliff to add an initial lock period.
                       </div>
-                    )}
-                  </FieldCard>
-                </div>
-              )}
+                      {hasCliffDate(draft.scheduleType) ? (
+                        <div className="grid gap-4">
+                          <label className="block">
+                            <span className="text-xs font-medium text-[#fffeea]/48">Cliff date</span>
+                            <span className="mt-2 flex h-12 items-center rounded-[4px] border border-[#fffeea]/14 bg-[#06070a] px-4 focus-within:border-[#f2d467]">
+                              <input
+                                className="min-w-0 flex-1 bg-transparent text-sm text-[#fffeea] outline-none [color-scheme:dark]"
+                                onChange={(event) => setDraft({ cliffDateTime: event.target.value })}
+                                type="datetime-local"
+                                value={draft.cliffDateTime}
+                              />
+                            </span>
+                            <span className="mt-2 block text-xs leading-5 text-[#fffeea]/45">
+                              Cliff must be after the start date and before the end date.
+                            </span>
+                          </label>
+                          {draft.scheduleType === "CliffLinear" ? (
+                            <TextInput
+                              label="Cliff unlock amount"
+                              onChange={(value) => setDraft({ cliffAmount: value })}
+                              placeholder="0"
+                              prefix={<TokenIcon size="size-6" />}
+                              value={draft.cliffAmount}
+                            />
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="rounded-[4px] border border-dashed border-[#fffeea]/12 bg-[#06070a] px-4 py-3 text-xs text-[#fffeea]/45">
+                          Linear streams do not use a cliff date.
+                        </div>
+                      )}
+                    </FieldCard>
+                  </div>
+                )}
             </section>
 
             <section className="flex flex-col gap-3">
               <h2 className="text-sm font-semibold text-[#fffeea]/78">Contract permissions</h2>
-              <FieldCard className="divide-y divide-[#fffeea]/12 p-4">
-                {[
-                  {
-                    title: "Cancellable",
-                    text: "Make this contract cancellable by its creator",
-                    enabled: draft.cancellable,
-                    onChange: (enabled: boolean) => setDraft({ cancellable: enabled }),
-                  },
-                  {
-                    title: "Auto-claim",
-                    text: "Send tokens to recipients' wallet automatically.",
-                    enabled: autoClaim,
-                    onChange: setAutoClaim,
-                  },
-                ].map((option) => (
-                  <div className="flex items-center justify-between gap-4 py-4 first:pt-0 last:pb-0" key={option.title}>
-                    <div>
-                      <div className="text-sm font-semibold">{option.title}</div>
-                      <div className="mt-1 text-xs text-[#fffeea]/50">{option.text}</div>
-                    </div>
-                    <Toggle enabled={option.enabled} label={`Toggle ${option.title}`} onChange={option.onChange} />
+              <FieldCard className="p-4">
+                <div className="flex items-center justify-between gap-4 border-b border-[#fffeea]/12 pb-4">
+                  <div>
+                    <div className="text-sm font-semibold">Auto-claim</div>
+                    <div className="mt-1 text-xs text-[#fffeea]/50">Send tokens to recipient wallets automatically.</div>
                   </div>
-                ))}
+                  <Toggle enabled={autoClaim} label="Toggle Auto-claim" onChange={setAutoClaim} />
+                </div>
+                <div className="grid gap-4 pt-4">
+                  <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,260px)] md:items-center">
+                    <div>
+                      <div className="text-sm font-semibold">Cancel authority</div>
+                      <div className="mt-1 text-xs text-[#fffeea]/50">Choose who is allowed to stop the stream before completion.</div>
+                    </div>
+                    <SelectBox
+                      onChange={(value) =>
+                        setDraft({
+                          cancelAuthority: value as VestingDraft["cancelAuthority"],
+                          cancellable: value !== "Neither",
+                        })
+                      }
+                      options={cancelAuthorityOptions}
+                      value={draft.cancelAuthority}
+                    />
+                  </div>
+                  {isMilestone ? (
+                    <div className="grid gap-4 border-t border-[#fffeea]/12 pt-4 md:grid-cols-[minmax(0,1fr)_minmax(220px,260px)] md:items-start">
+                      <div>
+                        <div className="text-sm font-semibold">Release authority</div>
+                        <div className="mt-1 text-xs text-[#fffeea]/50">Choose who can manually release the milestone before the deadline.</div>
+                      </div>
+                      <div>
+                        <SelectBox
+                          onChange={(value) => {
+                            if (value === "MultiSig") return;
+                            setDraft({ authorityType: value as VestingDraft["authorityType"] });
+                          }}
+                          options={authorityTypeOptions}
+                          value={draft.authorityType}
+                        />
+                        {draft.authorityType === "MultiSig" ? (
+                          <p className="mt-2 text-xs text-[#fffeea]/45">MultiSig setup needs the later backend approval model.</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                  {isMilestone && draft.authorityType === "SingleKey" ? (
+                    <TextInput
+                      label="Release authority wallet"
+                      onChange={(value) => setDraft({ releaseAuthorityWallet: value })}
+                      placeholder="Paste release authority public key"
+                      suffix={<FileText size={20} />}
+                      value={draft.releaseAuthorityWallet}
+                    />
+                  ) : null}
+                </div>
               </FieldCard>
             </section>
           </div>
@@ -2613,12 +2735,19 @@ export function ConfigurationPage() {
                 <SummaryItem label="Wallet balance">
                   {tokenBalance.balance ? `${formatTokenAmount(tokenBalance.balance.amount)} tokens` : tokenBalance.message}
                 </SummaryItem>
-                <SummaryItem label="Vesting window">{draft.startsImmediately ? `Upon creation - ${formatDraftDate(draft.endDateTime)}` : dateSummary}</SummaryItem>
-                <SummaryItem label="Unlock schedule">{draft.scheduleType === "Milestone" ? "Manual release" : unlockSchedule}</SummaryItem>
+                  <SummaryItem label={isMilestone ? "Release deadline" : "Vesting window"}>
+                    {isMilestone ? formatDraftDate(draft.endDateTime) : draft.startsImmediately ? `Upon creation - ${formatDraftDate(draft.endDateTime)}` : dateSummary}
+                  </SummaryItem>
+                  <SummaryItem label="Unlock schedule">{isMilestone ? "Manual release" : unlockSchedule}</SummaryItem>
                 <SummaryItem label="Type">{scheduleLabel(draft.scheduleType)}</SummaryItem>
-                <SummaryItem label="Cliff">{draft.scheduleType === "CliffLinear" ? formatDraftDate(draft.cliffDateTime) : "No cliff"}</SummaryItem>
+                  <SummaryItem label="Cliff">{hasCliffDate(draft.scheduleType) ? formatDraftDate(draft.cliffDateTime) : "No cliff"}</SummaryItem>
+                  <SummaryItem label="Release behavior">{scheduleDescription(draft)}</SummaryItem>
                 {draft.scheduleType === "Milestone" ? <SummaryItem label="Milestone">{draft.milestoneDescription || "Manual release"}</SummaryItem> : null}
                 <SummaryItem label="Recipient changes">{recipientChange}</SummaryItem>
+                {isMilestone ? (
+                  <SummaryItem label="Release authority">{draft.authorityType === "SingleKey" ? shortenAddress(draft.releaseAuthorityWallet) : draft.authorityType}</SummaryItem>
+                ) : null}
+                <SummaryItem label="Cancel authority">{cancelAuthorityOptions.find((option) => option.value === draft.cancelAuthority)?.label ?? draft.cancelAuthority}</SummaryItem>
               </div>
               <div className="mt-5 flex flex-wrap gap-2 border-t border-[#fffeea]/12 pt-4">
                 {permissionSummary.map((item) => (
@@ -2851,12 +2980,15 @@ function DetailGrid({ compact = false, draft = defaultVestingDraft }: { compact?
     { label: "Total amount", value: `${draft.amount} tokens` },
     { label: "Token", value: tokenLabel(draft) },
     { label: "Mint", value: draft.tokenMint ? shortenAddress(draft.tokenMint) : "Not set" },
-    { label: "Start time", value: draft.startsImmediately ? "Upon creation" : formatDraftDate(draft.startDateTime) },
-    { label: "End time", value: formatDraftDate(draft.endDateTime) },
-    { label: "Cliff", value: draft.scheduleType === "CliffLinear" ? formatDraftDate(draft.cliffDateTime) : "No cliff" },
+    { label: draft.scheduleType === "Milestone" ? "Release window" : "Start time", value: draft.scheduleType === "Milestone" ? "Until deadline" : draft.startsImmediately ? "Upon creation" : formatDraftDate(draft.startDateTime) },
+    { label: draft.scheduleType === "Milestone" ? "Release deadline" : "End time", value: formatDraftDate(draft.endDateTime) },
+    { label: "Cliff", value: hasCliffDate(draft.scheduleType) ? formatDraftDate(draft.cliffDateTime) : "No cliff" },
+    { label: "Release behavior", value: scheduleDescription(draft) },
+    { label: "Hybrid cliff amount", value: draft.scheduleType === "CliffLinear" ? `${draft.cliffAmount || "0"} tokens` : "Not used" },
     { label: "Number of recipients", value: "1" },
     { label: "Milestone", value: draft.scheduleType === "Milestone" ? draft.milestoneDescription || "Manual release" : "Not used" },
-    { label: "Cancellable", value: draft.cancellable ? "Enabled" : "Disabled" },
+    { label: "Release authority", value: draft.scheduleType === "Milestone" ? (draft.authorityType === "SingleKey" ? shortenAddress(draft.releaseAuthorityWallet) : draft.authorityType) : "Not used" },
+    { label: "Cancel authority", value: cancelAuthorityOptions.find((option) => option.value === draft.cancelAuthority)?.label ?? draft.cancelAuthority },
   ];
   return (
     <div className={`grid grid-cols-1 gap-x-10 gap-y-6 ${compact ? "md:grid-cols-3" : "md:grid-cols-3"}`}>
@@ -2899,10 +3031,12 @@ export function ReviewPage() {
       if (!walletPublicKey) await connect();
       setTransactionStage("sending");
       await delay(150);
-      const startTimestamp = draft.startsImmediately ? Math.floor(Date.now() / 1000) : parseLocalDateTime(draft.startDateTime, "Start date");
+        const startTimestamp = draft.scheduleType === "Milestone" || draft.startsImmediately ? Math.floor(Date.now() / 1000) : parseLocalDateTime(draft.startDateTime, "Start date");
       const endTimestamp = parseLocalDateTime(draft.endDateTime, "End date");
-      const cliffTimestamp = draft.scheduleType === "CliffLinear" ? parseLocalDateTime(draft.cliffDateTime, "Cliff date") : 0;
-      const input: CreateStreamInput = {
+        const cliffTimestamp = hasCliffDate(draft.scheduleType) ? parseLocalDateTime(draft.cliffDateTime, "Cliff date") : 0;
+      const authorityType = draft.scheduleType === "Milestone" ? draft.authorityType : "None";
+      const releaseAuthority = draft.scheduleType === "Milestone" && draft.authorityType === "SingleKey" ? parsePublicKey(draft.releaseAuthorityWallet, "Release authority wallet") : null;
+        const input: CreateStreamInput = {
         streamId: BigInt(Date.now()),
         mint: parsePublicKey(draft.tokenMint, "SPL mint"),
         recipient: parsePublicKey(draft.recipient, "Recipient wallet"),
@@ -2910,10 +3044,14 @@ export function ReviewPage() {
         startTimestamp,
         endTimestamp,
         cliffTimestamp,
-        scheduleType: draft.scheduleType,
-        milestoneDescription: draft.milestoneDescription,
-        isCancellable: draft.cancellable,
-      };
+          cliffAmount: draft.scheduleType === "CliffLinear" ? parseRawAmountAllowZero(draft.cliffAmount) : BigInt(0),
+          scheduleType: draft.scheduleType,
+        authorityType,
+          releaseAuthority,
+          milestoneDescription: draft.milestoneDescription,
+          isCancellable: draft.cancelAuthority !== "Neither" && draft.cancellable,
+          cancelAuthority: draft.cancelAuthority,
+        };
       const result = await createStream(input);
       setTransactionStage("confirming");
       const title = draft.contractTitle || "Vesting stream";
