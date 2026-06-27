@@ -27,7 +27,7 @@ import {
 } from "react";
 
 const PROGRAM_ID = new PublicKey("Fwboky3ufxoT43egazAymFmjyAtJVDJLVJs977oLSN4V");
-const DEVNET_RPC_URL = "https://api.devnet.solana.com";
+const DEVNET_RPC_URL = process.env.NEXT_PUBLIC_VELORA_DEVNET_RPC_URL ?? "https://api.devnet.solana.com";
 const ZERO_PUBKEY = PublicKey.default;
 
 const veloraIdl = {

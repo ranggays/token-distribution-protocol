@@ -34,7 +34,7 @@ import {
   X,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   Area,
   AreaChart,
@@ -213,8 +213,7 @@ type VestingDraft = {
   scheduleType: StreamView["scheduleType"];
   tokenPreset: string;
   tokenMint: string;
-  recipient: string;
-  amount: string;
+  recipients: VestingRecipient[];
   startDateTime: string;
   endDateTime: string;
   cliffDateTime: string;
@@ -229,6 +228,14 @@ type VestingDraft = {
   authorityType: "None" | "SingleKey" | "MultiSig";
   releaseAuthorityWallet: string;
   cancelAuthority: "CreatorOnly" | "Either" | "Neither";
+};
+
+type VestingRecipient = {
+  id: string;
+  title: string;
+  wallet: string;
+  amount: string;
+  source: "manual" | "csv" | "legacy";
 };
 
 type TransactionStage = "idle" | "wallet_approval" | "sending" | "confirming" | "success" | "error";
@@ -255,8 +262,7 @@ const defaultVestingDraft: VestingDraft = {
   scheduleType: "Linear",
   tokenPreset: "velora-test",
   tokenMint: veloraDevnetMint,
-  recipient: "",
-  amount: "1000",
+  recipients: [],
   startDateTime: "",
   endDateTime: "",
   cliffDateTime: "",
@@ -272,6 +278,50 @@ const defaultVestingDraft: VestingDraft = {
   releaseAuthorityWallet: "",
   cancelAuthority: "CreatorOnly",
 };
+
+function createRecipientId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function normalizeRecipient(value: unknown, fallbackSource: VestingRecipient["source"]): VestingRecipient | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Partial<VestingRecipient>;
+  const wallet = typeof record.wallet === "string" ? record.wallet : "";
+  const amount = typeof record.amount === "string" ? record.amount : "";
+  if (!wallet.trim() && !amount.trim()) return null;
+  return {
+    id: typeof record.id === "string" && record.id.trim() ? record.id : createRecipientId(),
+    title: typeof record.title === "string" && record.title.trim() ? record.title : "Vesting stream",
+    wallet,
+    amount,
+    source: record.source === "csv" || record.source === "manual" || record.source === "legacy" ? record.source : fallbackSource,
+  };
+}
+
+function migrateVestingDraft(parsed: Partial<VestingDraft> & { recipient?: unknown; amount?: unknown }) {
+  const recipients = Array.isArray(parsed.recipients)
+    ? parsed.recipients
+        .map((recipient) => normalizeRecipient(recipient, "manual"))
+        .filter((recipient): recipient is VestingRecipient => Boolean(recipient))
+    : [];
+
+  if (!recipients.length && typeof parsed.recipient === "string" && typeof parsed.amount === "string" && (parsed.recipient.trim() || parsed.amount.trim())) {
+    recipients.push({
+      id: createRecipientId(),
+      title: typeof parsed.contractTitle === "string" && parsed.contractTitle.trim() ? parsed.contractTitle : "Vesting stream",
+      wallet: parsed.recipient,
+      amount: parsed.amount,
+      source: "legacy",
+    });
+  }
+
+  return {
+    ...defaultVestingDraft,
+    ...parsed,
+    recipients,
+  };
+}
 
 function dateToLocalInputValue(date: Date) {
   const offsetMs = date.getTimezoneOffset() * 60 * 1000;
@@ -314,8 +364,8 @@ function withDraftDateDefaults(draft: VestingDraft) {
 function readVestingDraft(): VestingDraft {
   if (typeof window === "undefined") return defaultVestingDraft;
   try {
-    const parsed = JSON.parse(localStorage.getItem(vestingDraftStorageKey) ?? "{}") as Partial<VestingDraft>;
-    const draft = { ...defaultVestingDraft, ...parsed };
+    const parsed = JSON.parse(localStorage.getItem(vestingDraftStorageKey) ?? "{}") as Partial<VestingDraft> & { recipient?: unknown; amount?: unknown };
+    const draft = migrateVestingDraft(parsed);
     return withDraftDateDefaults(draft);
   } catch {
     return withDraftDateDefaults(defaultVestingDraft);
@@ -590,12 +640,35 @@ function useSelectedTokenBalance(tokenMint: string) {
   };
 }
 
-function getRequiredAmount(value: string) {
+function getRecipientsTotalAmount(recipients: VestingRecipient[]) {
   try {
-    return parseRawAmount(value);
+    if (!recipients.length) return null;
+    return recipients.reduce((total, recipient) => total + parseRawAmount(recipient.amount), BigInt(0));
   } catch {
     return null;
   }
+}
+
+function getRecipientIssue(recipient: VestingRecipient) {
+  if (!recipient.amount.trim()) return "Enter an amount.";
+  try {
+    parseRawAmount(recipient.amount);
+  } catch (error) {
+    return error instanceof Error ? error.message : "Enter a valid token amount.";
+  }
+
+  if (!recipient.wallet.trim()) return "Enter a recipient wallet.";
+  try {
+    parsePublicKey(recipient.wallet, "Recipient wallet");
+  } catch (error) {
+    return error instanceof Error ? error.message : "Enter a valid recipient wallet.";
+  }
+
+  return null;
+}
+
+function getValidRecipientCount(recipients: VestingRecipient[]) {
+  return recipients.filter((recipient) => !getRecipientIssue(recipient)).length;
 }
 
 function getBalanceIssue(balanceState: TokenBalanceState, requiredAmount: bigint | null) {
@@ -629,7 +702,8 @@ function getScheduleIssue(draft: VestingDraft) {
   if (draft.scheduleType === "CliffLinear") {
     try {
       const cliffAmount = parseRawAmountAllowZero(draft.cliffAmount);
-      const totalAmount = parseRawAmount(draft.amount);
+      const totalAmount = getRecipientsTotalAmount(draft.recipients);
+      if (!totalAmount) return "Enter at least one valid recipient amount.";
       if (cliffAmount > totalAmount) return "Hybrid cliff amount must be less than or equal to the total amount.";
     } catch {
       return "Enter a valid whole-number hybrid cliff amount.";
@@ -2773,15 +2847,147 @@ function SummaryItem({ label, children }: { label: string; children: React.React
   );
 }
 
+type CsvImportIssue = {
+  row: number;
+  message: string;
+};
+
+function parseCsv(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+
+    if (char === "\"") {
+      if (quoted && next === "\"") {
+        cell += "\"";
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+
+    if (char === "," && !quoted) {
+      row.push(cell.trim());
+      cell = "";
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && next === "\n") index += 1;
+      row.push(cell.trim());
+      if (row.some((value) => value.trim())) rows.push(row);
+      row = [];
+      cell = "";
+      continue;
+    }
+
+    cell += char;
+  }
+
+  row.push(cell.trim());
+  if (row.some((value) => value.trim())) rows.push(row);
+
+  return rows;
+}
+
+function parseRecipientCsv(text: string) {
+  const rows = parseCsv(text);
+  const errors: CsvImportIssue[] = [];
+  const recipients: VestingRecipient[] = [];
+
+  if (!rows.length) return { recipients, errors: [{ row: 1, message: "CSV file is empty." }] };
+
+  const headers = rows[0].map((header) => header.trim().toLowerCase());
+  const titleIndex = headers.indexOf("title");
+  const walletIndex = headers.indexOf("wallet");
+  const amountIndex = headers.indexOf("amount");
+  const missingColumns = [
+    titleIndex === -1 ? "Title" : null,
+    walletIndex === -1 ? "Wallet" : null,
+    amountIndex === -1 ? "Amount" : null,
+  ].filter(Boolean);
+
+  if (missingColumns.length) {
+    return {
+      recipients,
+      errors: [{ row: 1, message: `Missing required column${missingColumns.length > 1 ? "s" : ""}: ${missingColumns.join(", ")}.` }],
+    };
+  }
+
+  rows.slice(1).forEach((row, index) => {
+    const recipient: VestingRecipient = {
+      id: createRecipientId(),
+      title: row[titleIndex]?.trim() || "Vesting stream",
+      wallet: row[walletIndex]?.trim() ?? "",
+      amount: row[amountIndex]?.trim() ?? "",
+      source: "csv",
+    };
+    const issue = getRecipientIssue(recipient);
+    if (issue) {
+      errors.push({ row: index + 2, message: issue });
+      return;
+    }
+    recipients.push(recipient);
+  });
+
+  return { recipients, errors };
+}
+
+function downloadRecipientCsvTemplate() {
+  const blob = new Blob(["Title,Wallet,Amount\nSeed allocation,RecipientPublicKey,1000\n"], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "velora-recipients-template.csv";
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export function RecipientsPage() {
   const { draft, setDraft } = useVestingDraft();
   const tokenBalance = useSelectedTokenBalance(draft.tokenMint);
-  const recipientSaved = draft.recipient.trim().length > 0 && draft.amount.trim().length > 0;
-  const requiredAmount = getRequiredAmount(draft.amount);
-  const balanceIssue = recipientSaved ? getBalanceIssue(tokenBalance, requiredAmount) : null;
-  const canContinue = recipientSaved && !balanceIssue;
+  const recipients = draft.recipients;
+  const recipientCount = recipients.length;
+  const totalAmount = getRecipientsTotalAmount(recipients);
+  const invalidRows = recipients.filter((recipient) => getRecipientIssue(recipient));
+  const balanceIssue = recipientCount ? getBalanceIssue(tokenBalance, totalAmount) : null;
+  const canContinue = recipientCount > 0 && invalidRows.length === 0 && !balanceIssue;
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [modalOpen, setModalOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [editingRecipient, setEditingRecipient] = useState<VestingRecipient | null>(null);
+  const [menuRecipientId, setMenuRecipientId] = useState<string | null>(null);
+  const [csvErrors, setCsvErrors] = useState<CsvImportIssue[]>([]);
+
+  const openAddModal = () => {
+    setEditingRecipient(null);
+    setModalOpen(true);
+  };
+
+  const saveRecipient = (recipient: VestingRecipient) => {
+    setDraft({
+      recipients: editingRecipient ? recipients.map((item) => (item.id === editingRecipient.id ? recipient : item)) : [...recipients, recipient],
+    });
+    setModalOpen(false);
+    setEditingRecipient(null);
+  };
+
+  const removeRecipient = (recipientId: string) => {
+    setDraft({ recipients: recipients.filter((recipient) => recipient.id !== recipientId) });
+    setMenuRecipientId(null);
+  };
+
+  const handleCsvFile = async (file: File) => {
+    const text = await file.text();
+    const result = parseRecipientCsv(text);
+    setCsvErrors(result.errors);
+    if (result.recipients.length) setDraft({ recipients: [...recipients, ...result.recipients] });
+  };
 
   return (
     <WizardChrome
@@ -2800,89 +3006,150 @@ export function RecipientsPage() {
         <div className="mt-8">
           <BalanceNotice issue={balanceIssue} state={tokenBalance} />
         </div>
-        {recipientSaved ? (
+        {recipientCount ? (
           <div className="mt-8 flex flex-col gap-6 md:mt-14 md:gap-7">
-            <FieldCard className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-4 md:px-5">
-              <div className="flex items-center gap-3">
-                <TokenIcon />
-                <div className="min-w-0">
-                  <div className="truncate font-semibold">{draft.contractTitle || "Vesting stream"}</div>
-                  <div className="mt-1 text-sm text-[#fffeea]/58">
-                    {draft.amount} tokens · {draft.recipient.slice(0, 5)}...{draft.recipient.slice(-5)}
-                  </div>
-                </div>
-              </div>
-              <div className="relative">
-                <button
-                  aria-expanded={menuOpen}
-                  aria-label="Open recipient actions"
-                  className="grid size-9 place-items-center rounded-[4px] text-[#fffeea]/55 transition hover:bg-[#191b22] hover:text-[#fffeea]"
-                  onClick={() => setMenuOpen((open) => !open)}
-                  type="button"
-                >
-                  <MoreHorizontal size={20} />
-                </button>
-                {menuOpen ? (
-                  <div className="absolute right-0 top-11 z-40 w-40 overflow-hidden rounded-[4px] border border-[#fffeea]/16 bg-[#13151a] py-1 text-sm text-[#fffeea]/82 shadow-2xl shadow-black/50">
-                    <button
-                      className="block w-full px-4 py-2.5 text-left hover:bg-[#191b22]"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        setModalOpen(true);
-                      }}
-                      type="button"
-                    >
-                      Edit recipient
-                    </button>
-                    <button
-                      className="block w-full px-4 py-2.5 text-left text-red-300 hover:bg-[#191b22]"
-                      onClick={() => {
-                        setMenuOpen(false);
-                        setDraft({ amount: "", contractTitle: "Vesting stream", recipient: "" });
-                      }}
-                      type="button"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            </FieldCard>
-              <div className="flex flex-col gap-4 text-[#f2d467] sm:flex-row sm:justify-end sm:gap-8">
-              <button className="inline-flex items-center gap-2" onClick={() => setModalOpen(true)} type="button">
-                <Plus size={18} />
-                Add manually
-              </button>
-              <button className="inline-flex items-center gap-2" type="button">
-                <Upload size={18} />
-                Upload CSV
-              </button>
+            <div className="grid gap-3">
+              {recipients.map((recipient) => {
+                const issue = getRecipientIssue(recipient);
+                return (
+                  <FieldCard className="flex min-h-[68px] items-center justify-between gap-3 px-4 py-4 md:px-5" key={recipient.id}>
+                    <div className="flex min-w-0 items-center gap-3">
+                      <TokenIcon />
+                      <div className="min-w-0">
+                        <div className="truncate font-semibold">{recipient.title || "Vesting stream"}</div>
+                        <div className="mt-1 text-sm text-[#fffeea]/58">
+                          {recipient.amount || "0"} tokens · {recipient.wallet ? `${recipient.wallet.slice(0, 5)}...${recipient.wallet.slice(-5)}` : "No wallet"}
+                        </div>
+                        {issue ? <div className="mt-1 text-xs text-amber-200">{issue}</div> : null}
+                      </div>
+                    </div>
+                    <div className="relative shrink-0">
+                      <button
+                        aria-expanded={menuRecipientId === recipient.id}
+                        aria-label="Open recipient actions"
+                        className="grid size-9 place-items-center rounded-[4px] text-[#fffeea]/55 transition hover:bg-[#191b22] hover:text-[#fffeea]"
+                        onClick={() => setMenuRecipientId((current) => (current === recipient.id ? null : recipient.id))}
+                        type="button"
+                      >
+                        <MoreHorizontal size={20} />
+                      </button>
+                      {menuRecipientId === recipient.id ? (
+                        <div className="absolute right-0 top-11 z-40 w-40 overflow-hidden rounded-[4px] border border-[#fffeea]/16 bg-[#13151a] py-1 text-sm text-[#fffeea]/82 shadow-2xl shadow-black/50">
+                          <button
+                            className="block w-full px-4 py-2.5 text-left hover:bg-[#191b22]"
+                            onClick={() => {
+                              setMenuRecipientId(null);
+                              setEditingRecipient(recipient);
+                              setModalOpen(true);
+                            }}
+                            type="button"
+                          >
+                            Edit recipient
+                          </button>
+                          <button
+                            className="block w-full px-4 py-2.5 text-left text-red-300 hover:bg-[#191b22]"
+                            onClick={() => removeRecipient(recipient.id)}
+                            type="button"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </FieldCard>
+                );
+              })}
             </div>
+            <div className="flex flex-col gap-4 text-[#f2d467] sm:flex-row sm:justify-between sm:gap-8">
+              <div className="text-sm text-[#fffeea]/58">
+                {getValidRecipientCount(recipients)} valid of {recipientCount} recipients · {totalAmount ? formatTokenAmount(totalAmount) : "0"} tokens
+              </div>
+              <div className="flex flex-col gap-4 sm:flex-row sm:justify-end sm:gap-8">
+                <button className="inline-flex items-center gap-2" onClick={openAddModal} type="button">
+                  <Plus size={18} />
+                  Add manually
+                </button>
+                <button className="inline-flex items-center gap-2" onClick={() => fileInputRef.current?.click()} type="button">
+                  <Upload size={18} />
+                  Upload CSV
+                </button>
+                <button className="inline-flex items-center gap-2" onClick={downloadRecipientCsvTemplate} type="button">
+                  <FileText size={18} />
+                  Download template
+                </button>
+              </div>
+            </div>
+            {csvErrors.length ? <CsvErrorList errors={csvErrors} /> : null}
           </div>
         ) : (
           <div className="mt-8 flex flex-col gap-4 md:mt-14 md:gap-6">
-            <button className="flex h-[68px] items-center justify-center gap-3 rounded-[4px] border border-[#fffeea]/14 bg-[#13151a] text-lg text-[#fffeea]/78" onClick={() => setModalOpen(true)} type="button">
+            <button className="flex h-[68px] items-center justify-center gap-3 rounded-[4px] border border-[#fffeea]/14 bg-[#13151a] text-lg text-[#fffeea]/78" onClick={openAddModal} type="button">
               <Plus size={22} />
               Add manually
             </button>
-            <button className="flex h-[68px] items-center justify-center gap-3 rounded-[4px] border border-[#fffeea]/14 bg-[#13151a] text-lg text-[#fffeea]/78" type="button">
+            <button className="flex h-[68px] items-center justify-center gap-3 rounded-[4px] border border-[#fffeea]/14 bg-[#13151a] text-lg text-[#fffeea]/78" onClick={() => fileInputRef.current?.click()} type="button">
               <ArrowUp size={22} />
               Upload CSV
             </button>
+            <button className="flex h-[68px] items-center justify-center gap-3 rounded-[4px] border border-[#fffeea]/14 bg-[#13151a] text-lg text-[#fffeea]/78" onClick={downloadRecipientCsvTemplate} type="button">
+              <FileText size={22} />
+              Download template
+            </button>
+            {csvErrors.length ? <CsvErrorList errors={csvErrors} /> : null}
           </div>
         )}
+        <input
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void handleCsvFile(file);
+            event.target.value = "";
+          }}
+          ref={fileInputRef}
+          type="file"
+        />
       </section>
-      {modalOpen ? <RecipientModal onClose={() => setModalOpen(false)} onSave={(patch) => { setDraft(patch); setModalOpen(false); }} /> : null}
+      {modalOpen ? <RecipientModal initialRecipient={editingRecipient} onClose={() => setModalOpen(false)} onSave={saveRecipient} /> : null}
     </WizardChrome>
   );
 }
 
-function RecipientModal({ onClose, onSave }: { onClose: () => void; onSave: (patch: Partial<VestingDraft>) => void }) {
-  const { draft } = useVestingDraft();
-  const editing = draft.recipient.trim().length > 0;
-  const [title, setTitle] = useState(draft.contractTitle || "Vesting stream");
-  const [amount, setAmount] = useState(draft.amount);
-  const [recipient, setRecipient] = useState(draft.recipient);
+function CsvErrorList({ errors }: { errors: CsvImportIssue[] }) {
+  return (
+    <FieldCard className="p-4 text-sm text-amber-200">
+      <div className="font-semibold">CSV rows skipped</div>
+      <div className="mt-2 grid gap-1 text-xs leading-5">
+        {errors.map((error) => (
+          <div key={`${error.row}-${error.message}`}>Row {error.row}: {error.message}</div>
+        ))}
+      </div>
+    </FieldCard>
+  );
+}
+
+function RecipientModal({
+  initialRecipient,
+  onClose,
+  onSave,
+}: {
+  initialRecipient: VestingRecipient | null;
+  onClose: () => void;
+  onSave: (recipient: VestingRecipient) => void;
+}) {
+  const editing = Boolean(initialRecipient);
+  const [title, setTitle] = useState(initialRecipient?.title || "Vesting stream");
+  const [amount, setAmount] = useState(initialRecipient?.amount || "1000");
+  const [recipient, setRecipient] = useState(initialRecipient?.wallet || "");
+  const nextRecipient: VestingRecipient = {
+    id: initialRecipient?.id || createRecipientId(),
+    title: title.trim() || "Vesting stream",
+    amount,
+    wallet: recipient,
+    source: initialRecipient?.source || "manual",
+  };
+  const issue = getRecipientIssue(nextRecipient);
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/62 px-4">
       <div className="max-h-[calc(100vh-32px)] w-full max-w-[614px] overflow-y-auto rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] p-5 shadow-2xl md:p-8">
@@ -2899,6 +3166,7 @@ function RecipientModal({ onClose, onSave }: { onClose: () => void; onSave: (pat
             <p className="mt-3 text-base text-[#fffeea]/58">Enter how many tokens this recipient should receive.</p>
           </div>
           <TextInput label="Recipient wallet address*" onChange={setRecipient} placeholder="Recipient public key" suffix={<FileText size={20} />} value={recipient} />
+          {issue ? <p className="text-sm text-amber-200">{issue}</p> : null}
           <label className="flex items-center gap-3 text-base font-medium">
             <Toggle enabled={false} />
             Use connected wallet
@@ -2907,7 +3175,7 @@ function RecipientModal({ onClose, onSave }: { onClose: () => void; onSave: (pat
         </div>
         <div className="mt-8 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
           <SecondaryButton onClick={onClose}>Cancel</SecondaryButton>
-          <PrimaryButton onClick={() => onSave({ amount, contractTitle: title.trim() || "Vesting stream", recipient })}>Save</PrimaryButton>
+          <PrimaryButton disabled={Boolean(issue)} onClick={() => onSave(nextRecipient)}>Save</PrimaryButton>
         </div>
       </div>
     </div>
@@ -2974,10 +3242,11 @@ function DateTimeInput({
 }
 
 function DetailGrid({ compact = false, draft = defaultVestingDraft }: { compact?: boolean; draft?: VestingDraft }) {
+  const totalAmount = getRecipientsTotalAmount(draft.recipients);
   const items: Array<{ label: string; value: string; long?: boolean }> = [
     { label: "Contract title", value: draft.contractTitle || "Vesting stream" },
     { label: "Vesting type", value: scheduleLabel(draft.scheduleType) },
-    { label: "Total amount", value: `${draft.amount} tokens` },
+    { label: "Total amount", value: `${totalAmount ? formatTokenAmount(totalAmount) : "0"} tokens` },
     { label: "Token", value: tokenLabel(draft) },
     { label: "Mint", value: draft.tokenMint ? shortenAddress(draft.tokenMint) : "Not set" },
     { label: draft.scheduleType === "Milestone" ? "Release window" : "Start time", value: draft.scheduleType === "Milestone" ? "Until deadline" : draft.startsImmediately ? "Upon creation" : formatDraftDate(draft.startDateTime) },
@@ -2985,7 +3254,7 @@ function DetailGrid({ compact = false, draft = defaultVestingDraft }: { compact?
     { label: "Cliff", value: hasCliffDate(draft.scheduleType) ? formatDraftDate(draft.cliffDateTime) : "No cliff" },
     { label: "Release behavior", value: scheduleDescription(draft) },
     { label: "Hybrid cliff amount", value: draft.scheduleType === "CliffLinear" ? `${draft.cliffAmount || "0"} tokens` : "Not used" },
-    { label: "Number of recipients", value: "1" },
+    { label: "Number of recipients", value: String(draft.recipients.length) },
     { label: "Milestone", value: draft.scheduleType === "Milestone" ? draft.milestoneDescription || "Manual release" : "Not used" },
     { label: "Release authority", value: draft.scheduleType === "Milestone" ? (draft.authorityType === "SingleKey" ? shortenAddress(draft.releaseAuthorityWallet) : draft.authorityType) : "Not used" },
     { label: "Cancel authority", value: cancelAuthorityOptions.find((option) => option.value === draft.cancelAuthority)?.label ?? draft.cancelAuthority },
@@ -3013,60 +3282,83 @@ function InfoItem({ label, children }: { label: string; children: React.ReactNod
 
 export function ReviewPage() {
   const [successOpen, setSuccessOpen] = useState(false);
+  const [createdCount, setCreatedCount] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [transactionStage, setTransactionStage] = useState<TransactionStage>("idle");
+  const [submitProgress, setSubmitProgress] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const { draft } = useVestingDraft();
   const tokenBalance = useSelectedTokenBalance(draft.tokenMint);
-  const requiredAmount = getRequiredAmount(draft.amount);
+  const requiredAmount = getRecipientsTotalAmount(draft.recipients);
   const balanceIssue = getBalanceIssue(tokenBalance, requiredAmount);
   const scheduleIssue = getScheduleIssue(draft);
   const { walletPublicKey, connect, createStream } = useVeloraChain();
+  const invalidRecipient = draft.recipients.find((recipient) => getRecipientIssue(recipient));
+  const recipientIssue = !draft.recipients.length
+    ? "Add at least one recipient."
+    : invalidRecipient
+      ? `${invalidRecipient.title || "Recipient"}: ${getRecipientIssue(invalidRecipient)}`
+      : null;
 
   const handleCreate = async () => {
     setSubmitting(true);
     setTransactionStage("wallet_approval");
+    setSubmitProgress(null);
     setSubmitError(null);
+    setCreatedCount(0);
+    let successful = 0;
     try {
       if (!walletPublicKey) await connect();
       setTransactionStage("sending");
       await delay(150);
-        const startTimestamp = draft.scheduleType === "Milestone" || draft.startsImmediately ? Math.floor(Date.now() / 1000) : parseLocalDateTime(draft.startDateTime, "Start date");
+      const startTimestamp = draft.scheduleType === "Milestone" || draft.startsImmediately ? Math.floor(Date.now() / 1000) : parseLocalDateTime(draft.startDateTime, "Start date");
       const endTimestamp = parseLocalDateTime(draft.endDateTime, "End date");
-        const cliffTimestamp = hasCliffDate(draft.scheduleType) ? parseLocalDateTime(draft.cliffDateTime, "Cliff date") : 0;
+      const cliffTimestamp = hasCliffDate(draft.scheduleType) ? parseLocalDateTime(draft.cliffDateTime, "Cliff date") : 0;
       const authorityType = draft.scheduleType === "Milestone" ? draft.authorityType : "None";
       const releaseAuthority = draft.scheduleType === "Milestone" && draft.authorityType === "SingleKey" ? parsePublicKey(draft.releaseAuthorityWallet, "Release authority wallet") : null;
+      const mint = parsePublicKey(draft.tokenMint, "SPL mint");
+      const cliffAmount = draft.scheduleType === "CliffLinear" ? parseRawAmountAllowZero(draft.cliffAmount) : BigInt(0);
+      const baseStreamId = BigInt(Date.now());
+
+      for (let index = 0; index < draft.recipients.length; index += 1) {
+        const recipient = draft.recipients[index];
+        setSubmitProgress(`Creating ${index + 1} of ${draft.recipients.length}...`);
         const input: CreateStreamInput = {
-        streamId: BigInt(Date.now()),
-        mint: parsePublicKey(draft.tokenMint, "SPL mint"),
-        recipient: parsePublicKey(draft.recipient, "Recipient wallet"),
-        totalAmount: parseRawAmount(draft.amount),
-        startTimestamp,
-        endTimestamp,
-        cliffTimestamp,
-          cliffAmount: draft.scheduleType === "CliffLinear" ? parseRawAmountAllowZero(draft.cliffAmount) : BigInt(0),
+          streamId: baseStreamId + BigInt(index),
+          mint,
+          recipient: parsePublicKey(recipient.wallet, "Recipient wallet"),
+          totalAmount: parseRawAmount(recipient.amount),
+          startTimestamp,
+          endTimestamp,
+          cliffTimestamp,
+          cliffAmount,
           scheduleType: draft.scheduleType,
-        authorityType,
+          authorityType,
           releaseAuthority,
           milestoneDescription: draft.milestoneDescription,
           isCancellable: draft.cancelAuthority !== "Neither" && draft.cancellable,
           cancelAuthority: draft.cancelAuthority,
         };
-      const result = await createStream(input);
+        const result = await createStream(input);
+        successful += 1;
+        setCreatedCount(successful);
+        saveVestingMetadata([
+          result.streamConfig.toBase58(),
+          `${result.creator.toBase58()}:${result.recipient.toBase58()}:${result.streamId}`,
+        ], {
+          title: recipient.title || draft.contractTitle || "Vesting stream",
+        });
+      }
+
       setTransactionStage("confirming");
-      const title = draft.contractTitle || "Vesting stream";
-      saveVestingMetadata([
-        result.streamConfig.toBase58(),
-        `${result.creator.toBase58()}:${result.recipient.toBase58()}:${result.streamId}`,
-      ], {
-        title,
-      });
       setTransactionStage("success");
       setSuccessOpen(true);
     } catch (error) {
       setTransactionStage("error");
-      setSubmitError(error instanceof Error ? error.message : "Could not create vesting stream.");
+      const message = error instanceof Error ? error.message : "Could not create vesting stream.";
+      setSubmitError(successful > 0 ? `Created ${successful} of ${draft.recipients.length} streams. Remaining streams were not created: ${message}` : message);
     } finally {
+      setSubmitProgress(null);
       setSubmitting(false);
     }
   };
@@ -3077,8 +3369,8 @@ export function ReviewPage() {
       footer={
         <>
           <SecondaryButton href="/create-vesting/recipients">Back</SecondaryButton>
-          <PrimaryButton disabled={submitting || Boolean(balanceIssue) || Boolean(scheduleIssue)} onClick={() => void handleCreate()}>
-            {submitting ? "Creating..." : "Create Vesting"}
+          <PrimaryButton disabled={submitting || Boolean(balanceIssue) || Boolean(scheduleIssue) || Boolean(recipientIssue)} onClick={() => void handleCreate()}>
+            {submitting ? submitProgress ?? "Creating..." : "Create Vesting"}
           </PrimaryButton>
         </>
       }
@@ -3094,17 +3386,24 @@ export function ReviewPage() {
         {transactionStage !== "idle" && transactionStage !== "error" ? (
           <FieldCard className="p-4 text-sm text-[#fffeea]/70">{transactionStageLabel(transactionStage)}</FieldCard>
         ) : null}
+        {submitProgress ? <FieldCard className="p-4 text-sm text-[#fffeea]/70">{submitProgress}</FieldCard> : null}
+        {createdCount > 0 && submitting ? <FieldCard className="p-4 text-sm text-[#fffeea]/70">Created {createdCount} of {draft.recipients.length} streams.</FieldCard> : null}
         {submitError ? <FieldCard className="p-4 text-sm text-red-300">{submitError}</FieldCard> : null}
+        {recipientIssue ? <FieldCard className="p-4 text-sm text-amber-200">{recipientIssue}</FieldCard> : null}
         <h2 className="text-base font-semibold">Contract details</h2>
         <DetailGrid draft={draft} />
         <hr className="border-[#fffeea]/12" />
         <h2 className="text-base font-semibold">Recipients</h2>
-        <FieldCard className="flex min-h-11 flex-wrap items-center gap-3 px-4 py-3 text-sm">
-          <TokenIcon size="size-5" />
-          <span className="font-semibold">{draft.contractTitle || "Vesting stream"}</span>
-          <span className="text-[#fffeea]/58">{draft.amount} tokens</span>
-          <span className="text-[#fffeea]/58">{draft.recipient ? `${draft.recipient.slice(0, 5)}...${draft.recipient.slice(-5)}` : "No recipient"}</span>
-        </FieldCard>
+        <div className="grid gap-3">
+          {draft.recipients.map((recipient) => (
+            <FieldCard className="flex min-h-11 flex-wrap items-center gap-3 px-4 py-3 text-sm" key={recipient.id}>
+              <TokenIcon size="size-5" />
+              <span className="font-semibold">{recipient.title || "Vesting stream"}</span>
+              <span className="text-[#fffeea]/58">{recipient.amount} tokens</span>
+              <span className="text-[#fffeea]/58">{recipient.wallet ? `${recipient.wallet.slice(0, 5)}...${recipient.wallet.slice(-5)}` : "No recipient"}</span>
+            </FieldCard>
+          ))}
+        </div>
         <hr className="border-[#fffeea]/12" />
         <h2 className="text-base font-semibold">Fees</h2>
         <FieldCard className="flex items-center justify-between p-4 text-sm">
@@ -3112,12 +3411,12 @@ export function ReviewPage() {
           <ChevronDown size={18} />
         </FieldCard>
       </section>
-      {successOpen ? <SuccessModal /> : null}
+      {successOpen ? <SuccessModal count={createdCount || draft.recipients.length} /> : null}
     </WizardChrome>
   );
 }
 
-function SuccessModal() {
+function SuccessModal({ count }: { count: number }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/64 px-4">
       <div className="w-full max-w-[520px] rounded-[4px] border border-[#fffeea]/14 bg-[#0b0d11] p-8 text-center shadow-2xl">
@@ -3125,7 +3424,9 @@ function SuccessModal() {
           <Check size={34} />
         </div>
         <h2 className="mt-6 text-2xl font-semibold">Vesting created</h2>
-        <p className="mt-3 text-[#fffeea]/62">Your devnet vesting stream was created on-chain.</p>
+        <p className="mt-3 text-[#fffeea]/62">
+          {count === 1 ? "Your devnet vesting stream was created on-chain." : `${count} devnet vesting streams were created on-chain.`}
+        </p>
         <div className="mt-8 grid gap-3 sm:grid-cols-3">
           <SecondaryButton>Share on X</SecondaryButton>
           <SecondaryButton href="/create-vesting/type">Create again</SecondaryButton>
